@@ -1,0 +1,147 @@
+# immportamos las bibliotecas pygame y math
+import pygame 
+import math import serial # Already present from pygame.locals import *
+
+Inicializamos el motor de juegos
+pygame.init()
+
+Configuración de la comunicación serial
+puerto = 'COM9' # Reemplaza con tu puerto serial baudios = 9600 ser = None serial_port_available = True
+
+try: ser = serial.Serial(puerto, baudios) except serial.SerialException as e: print(f"Error opening serial port {puerto}: {e}") serial_port_available = False
+
+Initialize NMEA data variables
+latitude_str = "N/A" longitude_str = "N/A" speed_str = "N/A" heading_str = "N/A"
+
+NMEA Parsing Functions
+def parse_gll(sentence): global latitude_str, longitude_str try: parts = sentence.split(',') if len(parts) > 4 and parts[1] and parts[2] and parts[3] and parts[4]: latitude_str = f"{parts[1]} {parts[2]}" longitude_str = f"{parts[3]} {parts[4]}" except (IndexError, ValueError) as e: print(f"Error parsing GLL sentence: {sentence} - {e}")
+
+def parse_vtg(sentence): global speed_str try: parts = sentence.split(',') if len(parts) > 5 and parts[5]: speed_str = f"{parts[5]} Knots" except (IndexError, ValueError) as e: print(f"Error parsing VTG sentence: {sentence} - {e}")
+
+def parse_hdt(sentence): global heading_str try: parts = sentence.split(',') if len(parts) > 1 and parts[1]: heading_str = f"{parts[1]} T" except (IndexError, ValueError) as e: print(f"Error parsing HDT sentence: {sentence} - {e}")
+
+def parse_hdg(sentence): global heading_str try: parts = sentence.split(',') if len(parts) > 1 and parts[1]: # For now, just heading. Magnetic variation parts[3] and parts[4] heading_str = f"{parts[1]}" if len(parts) > 4 and parts[3] and parts[4]: # Optionally add variation heading_str += f" (Mag Var: {parts[3]} {parts[4]})" else: heading_str += " (No Mag Var)" except (IndexError, ValueError) as e: print(f"Error parsing HDG sentence: {sentence} - {e}")
+
+Definimos algunos colores
+NEGRO = (0, 0, 0) BLANCO = (255, 255, 255) VERDE = (0, 255, 0) ROJO = (255, 0, 0) AZUL = (0, 0, 255)
+
+PI = 3.141592653
+
+Establecemos la altura y largo de la pantalla
+dimensiones = [900, 630] screen = pygame.display.set_mode((900, 630)) pygame.display.set_caption("SIMULADOR SONAR") pantalla = pygame.display.set_mode(dimensiones)
+
+Font initialization
+font = pygame.font.Font(None, 24) # Using a default system font
+
+Text string definitions (already added in previous step, kept for completeness)
+texto_latitud = "COORDENADAS" texto_longitud = "VELOCIDAD" texto_velocidad = "RUMBO"
+
+Usado para gestionar cuán rápido se actualiza la pantalla
+reloj = pygame.time.Clock()
+
+#Iteramos hasta que el usuario haga click sobre el botón de cerrar hecho = False
+
+angulo = 0
+
+while not hecho: for evento in pygame.event.get(): # El usuario hizo algo if evento.type == pygame.QUIT: # Si el usuario hace click sobre cerrar hecho = True # Marca que ya lo hemos hecho, de forma que abandonamos el bucle
+
+# Read from serial port if available
+if serial_port_available and ser and ser.in_waiting > 0:
+    try:
+        line = ser.readline().decode('ascii', errors='replace').strip()
+        if line.startswith('$GPGLL') or line.startswith('$GNGLL'):
+            parse_gll(line)
+        elif line.startswith('$GPGGA') or line.startswith('$GNGGA'):
+            parse_gga(line)
+        elif line.startswith('$GPRMC') or line.startswith('$GNRMC'):
+            parse_rmc(line)
+        elif line.startswith('$GPVTG') or line.startswith('$GNVTG'):
+            parse_vtg(line)
+        elif line.startswith('$GPHDT') or line.startswith('$GNHDT'):
+            parse_hdt(line)
+        elif line.startswith('$GPHDG') or line.startswith('$GNHDG'):
+            parse_hdg(line)
+    except Exception as e:
+        print(f"Error reading or parsing serial data: {e}")
+
+# Limpia la pantalla y establece su color de fondo
+pantalla.fill(AZUL)
+
+
+dimensiones_caja = [10, 10, 600, 600]
+dimensiones_caja2 = [620, 10, 280, 200]
+dimensiones_caja3 = [620, 220, 280, 190]
+dimensiones_caja4 = [620, 420, 280, 200]
+# Dibujamos el borde de un círculo para 'barrerlo'
+pygame.draw.ellipse(pantalla, BLANCO, dimensiones_caja, 2)
+
+# Dibujamos una caja negra alrededor del círculo
+pygame.draw.rect(pantalla, VERDE, dimensiones_caja2, 2)
+pygame.draw.rect(pantalla, VERDE, dimensiones_caja3, 2)
+pygame.draw.rect(pantalla, VERDE, dimensiones_caja4, 2)
+Render 'latitud' text
+text_surface_latitud = font.render(texto_latitud, True, BLANCO)
+text_rect_latitud = text_surface_latitud.get_rect()
+text_rect_latitud.centerx = dimensiones_caja2[0] + dimensiones_caja2[2] // 2
+text_rect_latitud.top = dimensiones_caja2[1] + 10 # Adjusted for title
+screen.blit(text_surface_latitud, text_rect_latitud)
+
+# Render Latitude and Longitude Data
+text_surface_lat_data = font.render(f"Lat: {latitude_str}", True, BLANCO)
+text_rect_lat_data = text_surface_lat_data.get_rect()
+text_rect_lat_data.topleft = (dimensiones_caja2[0] + 10, text_rect_latitud.bottom + 5)
+screen.blit(text_surface_lat_data, text_rect_lat_data)
+
+text_surface_lon_data = font.render(f"Lon: {longitude_str}", True, BLANCO)
+text_rect_lon_data = text_surface_lon_data.get_rect()
+text_rect_lon_data.topleft = (dimensiones_caja2[0] + 10, text_rect_lat_data.bottom + 5)
+screen.blit(text_surface_lon_data, text_rect_lon_data)
+
+# Render 'VELOCIDAD' title
+text_surface_longitud = font.render(texto_longitud, True, BLANCO) # texto_longitud is "VELOCIDAD"
+text_rect_longitud = text_surface_longitud.get_rect()
+text_rect_longitud.centerx = dimensiones_caja3[0] + dimensiones_caja3[2] // 2
+text_rect_longitud.top = dimensiones_caja3[1] + 10 # Adjusted for title
+screen.blit(text_surface_longitud, text_rect_longitud)
+
+# Render Speed Data
+text_surface_speed_data = font.render(speed_str, True, BLANCO)
+text_rect_speed_data = text_surface_speed_data.get_rect()
+text_rect_speed_data.topleft = (dimensiones_caja3[0] + 10, text_rect_longitud.bottom + 5)
+screen.blit(text_surface_speed_data, text_rect_speed_data)
+
+# Render 'RUMBO' title
+text_surface_velocidad = font.render(texto_velocidad, True, BLANCO) # texto_velocidad is "RUMBO"
+text_rect_velocidad = text_surface_velocidad.get_rect()
+text_rect_velocidad.centerx = dimensiones_caja4[0] + dimensiones_caja4[2] // 2
+text_rect_velocidad.top = dimensiones_caja4[1] + 10 # Adjusted for title
+screen.blit(text_surface_velocidad, text_rect_velocidad)
+
+# Render Heading Data
+text_surface_heading_data = font.render(heading_str, True, BLANCO)
+text_rect_heading_data = text_surface_heading_data.get_rect()
+text_rect_heading_data.topleft = (dimensiones_caja4[0] + 10, text_rect_velocidad.bottom + 5)
+screen.blit(text_surface_heading_data, text_rect_heading_data)
+
+# Calculamos las coordenadas finales (x,y) de nuestro 'barrido',
+# basándonos en el ángulo actual
+x = 300 * math.sin(angulo) + 310
+y = 300 * math.cos(angulo) + 310
+
+# Dibujamos una línea desde el centro ubicado en las coordenadas 
+pygame.draw.line(pantalla, VERDE, [310, 310], [x, y], 2)
+
+# Decrementamos el ángulo (counter-clockwise sweep)
+angulo = angulo - .03 # 0.03 is the step
+
+# Si el ángulo completa un barrido completo (va más allá de -360 grados), reinicia a 0
+if angulo <= -2 * PI:
+    angulo = 0
+     
+# Avancemos y actualicemos la pantalla con lo que hemos dibujado.
+pygame.display.flip()
+
+# Limitamos a 60 fotogramas por segundo
+reloj.tick(60)
+if serial_port_available and ser is not None: ser.close()
+pygame.quit()
