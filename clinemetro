@@ -1,147 +1,841 @@
 # immportamos las bibliotecas pygame y math
-import pygame 
-import math import serial # Already present from pygame.locals import *
+import pygame
+import math
+import os # Importar el módulo os
+import serial # Importación corregida
+import json # Para configuración persistente
+from serial.tools.list_ports import comports # Para detectar puertos
+from pygame.locals import * # Asegurar que locals esté después de pygame
 
-Inicializamos el motor de juegos
+# Definimos algunos colores base primero
+NEGRO = (0, 0, 0) 
+BLANCO = (255, 255, 255) 
+VERDE = (0, 255, 0) 
+ROJO = (255, 0, 0) 
+AZUL = (0, 0, 255)
+
+# Nombre del archivo de configuración
+ARCHIVO_CONFIG_SERIAL = "config_serial.json"
+lista_puertos_detectados = [] # Para almacenar los puertos detectados
+
+# Variables para reconexión automática
+ultimo_intento_reconeccion_tiempo = 0
+INTERVALO_RECONECCION_MS = 5000 # 5 segundos
+
+# Variables para el mensaje "NO HAY DATOS"
+ultima_vez_datos_recibidos = 0 # Se inicializará correctamente después de pygame.init()
+UMBRAL_SIN_DATOS_MS = 3000 # 3 segundos
+
+# Funciones para cargar y guardar configuración serial
+def cargar_configuracion_serial():
+    try:
+        with open(ARCHIVO_CONFIG_SERIAL, 'r') as f:
+            config = json.load(f)
+            return config.get('puerto', 'COM9'), int(config.get('baudios', 9600))
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        return 'COM9', 9600 # Valores por defecto
+
+def guardar_configuracion_serial(puerto, baudios):
+    config = {'puerto': puerto, 'baudios': int(baudios)}
+    try:
+        with open(ARCHIVO_CONFIG_SERIAL, 'w') as f:
+            json.dump(config, f, indent=4)
+        print(f"Configuración guardada: Puerto={puerto}, Baudios={baudios}")
+    except IOError:
+        print(f"Error al guardar la configuración en {ARCHIVO_CONFIG_SERIAL}")
+
+# Inicializamos el motor de juegos
 pygame.init()
+ultima_vez_datos_recibidos = pygame.time.get_ticks() # Inicialización correcta
 
-Configuración de la comunicación serial
-puerto = 'COM9' # Reemplaza con tu puerto serial baudios = 9600 ser = None serial_port_available = True
+# Cargar configuración serial al inicio
+puerto, baudios = cargar_configuracion_serial()
+print(f"Configuración cargada: Puerto={puerto}, Baudios={baudios}")
 
-try: ser = serial.Serial(puerto, baudios) except serial.SerialException as e: print(f"Error opening serial port {puerto}: {e}") serial_port_available = False
+ser = None 
+serial_port_available = True
 
-Initialize NMEA data variables
-latitude_str = "N/A" longitude_str = "N/A" speed_str = "N/A" heading_str = "N/A"
+# Variables para la ventana de configuración del puerto serie
+mostrar_ventana_config_serial = False
+input_puerto_str = str(puerto) # Inicializar con el puerto cargado
+lista_baudios_seleccionables = sorted([4800, 9600, 19200, 38400, 57600, 115200]) # Añadido 4800 y ordenado
+try:
+    input_baudios_idx = lista_baudios_seleccionables.index(baudios)
+except ValueError:
+    input_baudios_idx = 0 # Default al primer elemento si el baudios cargado no está en la lista
 
-NMEA Parsing Functions
-def parse_gll(sentence): global latitude_str, longitude_str try: parts = sentence.split(',') if len(parts) > 4 and parts[1] and parts[2] and parts[3] and parts[4]: latitude_str = f"{parts[1]} {parts[2]}" longitude_str = f"{parts[3]} {parts[4]}" except (IndexError, ValueError) as e: print(f"Error parsing GLL sentence: {sentence} - {e}")
+# Geometría (se definirá mejor luego, placeholders por ahora)
+rect_boton_config = pygame.Rect(610, 500, 280, 40) # Debajo de las cajas de datos
+# rect_ventana_config = pygame.Rect(200, 150, 500, 300) # Centrada # Antigua Posición
+rect_ventana_config = pygame.Rect(450, 100, 400, 350) # Más a la derecha, más estrecha, más alta
 
-def parse_vtg(sentence): global speed_str try: parts = sentence.split(',') if len(parts) > 5 and parts[5]: speed_str = f"{parts[5]} Knots" except (IndexError, ValueError) as e: print(f"Error parsing VTG sentence: {sentence} - {e}")
+# Colores estilo "Windows" (aproximado)
+COLOR_VENTANA_FONDO = (240, 240, 240) # Gris muy claro
+COLOR_TEXTO_NORMAL = NEGRO
+COLOR_BORDE_VENTANA = (170, 170, 170) # Gris medio
+COLOR_BOTON_FONDO = (225, 225, 225) # Gris claro para botones
+COLOR_BOTON_BORDE = (150, 150, 150) # Gris más oscuro para borde de botón
+COLOR_INPUT_FONDO = BLANCO
+COLOR_INPUT_BORDE = (120, 120, 120) # Gris oscuro para borde de input
+COLOR_DROPDOWN_FONDO = (250, 250, 250) # Casi blanco para desplegables
+COLOR_DROPDOWN_BORDE = (100, 100, 100)
+COLOR_SELECCION_DROPDOWN = (200, 220, 255) # Azul claro para resaltar selección (futuro)
 
-def parse_hdt(sentence): global heading_str try: parts = sentence.split(',') if len(parts) > 1 and parts[1]: heading_str = f"{parts[1]} T" except (IndexError, ValueError) as e: print(f"Error parsing HDT sentence: {sentence} - {e}")
 
-def parse_hdg(sentence): global heading_str try: parts = sentence.split(',') if len(parts) > 1 and parts[1]: # For now, just heading. Magnetic variation parts[3] and parts[4] heading_str = f"{parts[1]}" if len(parts) > 4 and parts[3] and parts[4]: # Optionally add variation heading_str += f" (Mag Var: {parts[3]} {parts[4]})" else: heading_str += " (No Mag Var)" except (IndexError, ValueError) as e: print(f"Error parsing HDG sentence: {sentence} - {e}")
+# COLOR_INPUT_ACTIVO = pygame.Color('lightskyblue3') # Reemplazado
+# COLOR_INPUT_INACTIVO = pygame.Color('gray15') # Reemplazado
+input_puerto_activo = False 
+puerto_dropdown_activo = False 
+baudios_dropdown_activo = False # Estado del desplegable de baudios
 
-Definimos algunos colores
-NEGRO = (0, 0, 0) BLANCO = (255, 255, 255) VERDE = (0, 255, 0) ROJO = (255, 0, 0) AZUL = (0, 0, 255)
+# Geometría para elementos dentro de la ventana de configuración
+rect_input_puerto_config = pygame.Rect(rect_ventana_config.left + 120, rect_ventana_config.top + 55, rect_ventana_config.width - 160, 30) # Área del "campo" de puerto
+rect_lista_puertos_desplegable = None 
+lista_rects_items_puerto = [] 
 
+rect_input_baudios_display_config = pygame.Rect(rect_ventana_config.left + 120, rect_ventana_config.top + 105, rect_ventana_config.width - 160, 30) # Ancho igual al de puerto
+rect_lista_baudios_desplegable = None
+lista_rects_items_baudios = []
+
+# rect_flecha_baudios_arriba_config = pygame.Rect(rect_input_baudios_display_config.right + 10, rect_input_baudios_display_config.top, 30, 14) # Eliminadas
+# rect_flecha_baudios_abajo_config = pygame.Rect(rect_input_baudios_display_config.right + 10, rect_input_baudios_display_config.centery + 1, 30, 14) # Eliminadas
+rect_boton_guardar_config = pygame.Rect(rect_ventana_config.centerx - 75, rect_ventana_config.bottom - 60, 150, 40)
+rect_boton_cerrar_config = pygame.Rect(rect_ventana_config.right - 35, rect_ventana_config.top + 5, 30, 30) # Botón X
+
+
+try: 
+    ser = serial.Serial(puerto, baudios) # Usar config cargada
+    print(f"Puerto serial {puerto} abierto con {baudios} baudios.")
+except serial.SerialException as e: # Usar excepción específica
+    print(f"Error opening serial port {puerto} with {baudios} baud: {e}") 
+    serial_port_available = False
+except Exception as e: # Captura general por si acaso durante desarrollo
+    print(f"An unexpected error occurred opening serial port: {e}")
+    serial_port_available = False
+
+
+# Initialize NMEA data variables
+latitude_str = "N/A" 
+longitude_str = "N/A" 
+speed_str = "N/A" 
+heading_str = "N/A"
+# Variables para datos de Actitud (ATT)
+att_heading_str = "N/A"
+att_pitch_str = "N/A"
+att_roll_str = "N/A"
+
+# NMEA Parsing Functions
+def parse_pfec_gpatt(sentence):
+    global att_heading_str, att_pitch_str, att_roll_str, ultima_vez_datos_recibidos
+    try:
+        parts = sentence.split(',')
+        # Ejemplo: $PFEC,GPatt,312.7,+12.0,-25.0*4D
+        # parts[0] = $PFEC
+        # parts[1] = GPatt
+        # parts[2] = Heading (e.g., 312.7)
+        # parts[3] = Pitch (e.g., +12.0)
+        # parts[4] = Roll (e.g., -25.0) (before checksum)
+        if len(parts) >= 5 and parts[1] == "GPatt":
+            att_heading_str = parts[2] if parts[2] else "N/A"
+            att_pitch_str = parts[3] if parts[3] else "N/A"
+            # El Roll puede tener un checksum, lo separamos
+            roll_part = parts[4].split('*')[0]
+            att_roll_str = roll_part if roll_part else "N/A"
+            ultima_vez_datos_recibidos = pygame.time.get_ticks()
+    except (IndexError, ValueError) as e:
+        print(f"Error parsing PFEC,GPatt sentence: {sentence} - {e}")
+
+def parse_gga(sentence):
+    global latitude_str, longitude_str, ultima_vez_datos_recibidos
+    try:
+        parts = sentence.split(',')
+        if len(parts) > 5 and parts[2] and parts[3] and parts[4] and parts[5]:
+            latitude_str = f"{parts[2]} {parts[3]}"
+            longitude_str = f"{parts[4]} {parts[5]}"
+            ultima_vez_datos_recibidos = pygame.time.get_ticks()
+    except (IndexError, ValueError) as e:
+        print(f"Error parsing GGA sentence: {sentence} - {e}")
+
+def parse_rmc(sentence):
+    global latitude_str, longitude_str, ultima_vez_datos_recibidos
+    try:
+        parts = sentence.split(',')
+        if len(parts) > 6 and parts[3] and parts[4] and parts[5] and parts[6]:
+            latitude_str = f"{parts[3]} {parts[4]}"
+            longitude_str = f"{parts[5]} {parts[6]}"
+            ultima_vez_datos_recibidos = pygame.time.get_ticks()
+    except (IndexError, ValueError) as e:
+        print(f"Error parsing RMC sentence: {sentence} - {e}")
+
+def parse_gll(sentence): 
+    global latitude_str, longitude_str, ultima_vez_datos_recibidos
+    try: 
+        parts = sentence.split(',') 
+        if len(parts) > 4 and parts[1] and parts[2] and parts[3] and parts[4]: 
+            latitude_str = f"{parts[1]} {parts[2]}" 
+            longitude_str = f"{parts[3]} {parts[4]}" 
+            ultima_vez_datos_recibidos = pygame.time.get_ticks()
+    except (IndexError, ValueError) as e: 
+        print(f"Error parsing GLL sentence: {sentence} - {e}")
+
+# TODO: Add parse_gga and parse_rmc if they are needed based on NMEA data received
+# def parse_gga(sentence):
+#     global latitude_str, longitude_str
+#     try:
+#         parts = sentence.split(',')
+#         if len(parts) > 5 and parts[2] and parts[3] and parts[4] and parts[5]:
+#             latitude_str = f"{parts[2]} {parts[3]}"
+#             longitude_str = f"{parts[4]} {parts[5]}"
+#     except (IndexError, ValueError) as e:
+#         print(f"Error parsing GGA sentence: {sentence} - {e}")
+
+# def parse_rmc(sentence):
+#     global latitude_str, longitude_str
+#     try:
+#         parts = sentence.split(',')
+#         if len(parts) > 6 and parts[3] and parts[4] and parts[5] and parts[6]:
+#             latitude_str = f"{parts[3]} {parts[4]}"
+#             longitude_str = f"{parts[5]} {parts[6]}"
+#     except (IndexError, ValueError) as e:
+#         print(f"Error parsing RMC sentence: {sentence} - {e}")
+
+def parse_vtg(sentence): 
+    global speed_str, ultima_vez_datos_recibidos
+    try: 
+        parts = sentence.split(',') 
+        if len(parts) > 5 and parts[5]: 
+            speed_str = f"{parts[5]} Knots" 
+            ultima_vez_datos_recibidos = pygame.time.get_ticks()
+    except (IndexError, ValueError) as e: 
+        print(f"Error parsing VTG sentence: {sentence} - {e}")
+
+def parse_hdt(sentence): 
+    global heading_str, ultima_vez_datos_recibidos
+    try: 
+        parts = sentence.split(',') 
+        if len(parts) > 1 and parts[1]: 
+            heading_str = f"{parts[1]} T" 
+            ultima_vez_datos_recibidos = pygame.time.get_ticks()
+    except (IndexError, ValueError) as e: 
+        print(f"Error parsing HDT sentence: {sentence} - {e}")
+
+def parse_hdg(sentence): 
+    global heading_str, ultima_vez_datos_recibidos
+    try: 
+        parts = sentence.split(',') 
+        if len(parts) > 1 and parts[1]: 
+            # For now, just heading. Magnetic variation parts[3] and parts[4] 
+            heading_str = f"{parts[1]}" 
+            if len(parts) > 4 and parts[3] and parts[4]: # Optionally add variation 
+                 heading_str += f" (Mag Var: {parts[3]} {parts[4]})"
+            else:
+                 heading_str += " (No Mag Var)"
+            ultima_vez_datos_recibidos = pygame.time.get_ticks()
+    except (IndexError, ValueError) as e:
+        print(f"Error parsing HDG sentence: {sentence} - {e}")
+
+# Definimos algunos colores # MOVIDOS ARRIBA
+# NEGRO = (0, 0, 0) 
+# BLANCO = (255, 255, 255) 
+# VERDE = (0, 255, 0) 
+# ROJO = (255, 0, 0) 
+# AZUL = (0, 0, 255)
+ 
 PI = 3.141592653
 
-Establecemos la altura y largo de la pantalla
-dimensiones = [900, 630] screen = pygame.display.set_mode((900, 630)) pygame.display.set_caption("SIMULADOR SONAR") pantalla = pygame.display.set_mode(dimensiones)
+# Establecemos la altura y largo de la pantalla
+dimensiones = [900, 630] # Restaurado a tamaño original o adecuado
+screen = pygame.display.set_mode(dimensiones) 
+pygame.display.set_caption("Visor NMEA Avanzado") # Título actualizado
+# pantalla = pygame.display.set_mode(dimensiones) # Sigue siendo redundante
 
-Font initialization
-font = pygame.font.Font(None, 24) # Using a default system font
+# Definiciones geométricas para la UI (movidas aquí para disponibilidad global)
+area_izquierda_rect = pygame.Rect(10, 10, 580, dimensiones[1] - 20) # Ajustar altura a dimensiones de pantalla
+centro_y_circulos = area_izquierda_rect.centery
+radio_circulo_img = 78 # Aumentado en 3 (de 75 a 78)
+centro_x_circulo1 = 10 + radio_circulo_img + 50 
+centro_x_circulo2 = centro_x_circulo1 + (2 * radio_circulo_img) + 50
 
-Text string definitions (already added in previous step, kept for completeness)
-texto_latitud = "COORDENADAS" texto_longitud = "VELOCIDAD" texto_velocidad = "RUMBO"
+# Parámetros para las marcas de grados de la claraboya de pitch
+LONGITUD_MARCA_GRADO = 8
+GROSOR_MARCA_GRADO = 2
+COLOR_MARCA_GRADO = BLANCO
+COLOR_ETIQUETA_GRADO = BLANCO # Color para el texto de las etiquetas
+RADIO_INICIO_MARCAS = radio_circulo_img 
+RADIO_FIN_MARCAS = radio_circulo_img + LONGITUD_MARCA_GRADO
+OFFSET_TEXTO_ETIQUETA = 10 # Distancia desde el final de la marca al centro del texto
+RADIO_POSICION_TEXTO_ETIQUETA = RADIO_FIN_MARCAS + OFFSET_TEXTO_ETIQUETA
 
-Usado para gestionar cuán rápido se actualiza la pantalla
+# Definición de marcas y etiquetas (ángulos en grados trigonométricos, texto)
+# 0 es derecha, -90 es arriba (Pygame Y aumenta hacia abajo)
+ANGULOS_MARCAS_ETIQUETAS_DEF = {
+    "0_der": (0, "0"),      
+    "0_izq": (180, "0"),    
+    "sup_mas_30": (-120, "+30"),  # Etiqueta "+30" en la posición de -120 grados trig. (superior izquierda)
+    "sup_menos_30": (-60, "-30") # Etiqueta "-30" en la posición de -60 grados trig. (superior derecha)
+}
+
+# Cargar y escalar imagen de fondo
+script_dir = os.path.dirname(os.path.abspath(__file__))
+ruta_imagen_fondo = os.path.join(script_dir, "mar.jpg")
+
+try:
+    imagen_fondo_original = pygame.image.load(ruta_imagen_fondo) # Usar la ruta construida
+    imagen_fondo_escalada = pygame.transform.scale(imagen_fondo_original, dimensiones)
+    imagen_fondo_escalada = imagen_fondo_escalada.convert() # Optimizar para blitting
+except (pygame.error, FileNotFoundError) as e: # Capturar FileNotFoundError también
+    print(f"Error al cargar la imagen de fondo '{ruta_imagen_fondo}': {e}") 
+    print("Asegúrate de que 'mar.jpg' está en el mismo directorio que el script o verifica la ruta.")
+    print("Se usará un fondo de color sólido en su lugar.")
+    imagen_fondo_escalada = None # Para poder verificar si se cargó
+
+# Cargar imagen de pitch
+pitch_image_base_grande = None # Renombrada
+try:
+    ruta_imagen_pitch = os.path.join(script_dir, "pitch.png")
+    pitch_image_surface_original_temp = pygame.image.load(ruta_imagen_pitch)
+    
+    # Escalar la imagen de pitch para ser MÁS GRANDE que la claraboya
+    lado_pitch_deseado_grande = int((2 * radio_circulo_img) + 2) # Margen ajustado a 2px
+                                                                
+    pitch_image_scaled_temp = pygame.transform.smoothscale(
+        pitch_image_surface_original_temp, (lado_pitch_deseado_grande, lado_pitch_deseado_grande)
+    )
+        
+    # Aplicar colorkey si es necesario ANTES de convert_alpha
+    # Por ejemplo, si el fondo de pitch.png es blanco puro y no tiene canal alfa:
+    # pitch_image_scaled_temp.set_colorkey((255, 255, 255)) # BLANCO
+    
+    pitch_image_base_grande = pitch_image_scaled_temp.convert_alpha()
+    print(f"Imagen 'pitch.png' cargada, escalada a ({lado_pitch_deseado_grande}x{lado_pitch_deseado_grande}) y convertida con alfa.")
+except (pygame.error, FileNotFoundError) as e:
+    print(f"Error al cargar o escalar la imagen 'pitch.png': {e}")
+    print("Asegúrate de que 'pitch.png' está en el mismo directorio que el script.")
+    pitch_image_base_grande = None
+
+# Cargar imagen de roll
+roll_image_base_grande = None
+try:
+    ruta_imagen_roll = os.path.join(script_dir, "roll.png")
+    roll_image_surface_original_temp = pygame.image.load(ruta_imagen_roll)
+    
+    # Usar el mismo tamaño deseado que para la imagen de pitch para consistencia
+    # lado_roll_deseado_grande = lado_pitch_deseado_grande 
+    # (lado_pitch_deseado_grande ya está definido globalmente si se movió, o localmente si no)
+    # Si no está global, necesitamos recalcularlo o pasarlo. Asumiendo que está disponible o se recalcula.
+    # Para evitar dependencia, lo recalculo aquí basado en radio_circulo_img
+    lado_img_deseado_grande = int((2 * radio_circulo_img) + 2) # Mismo margen que pitch
+                                                                
+    roll_image_scaled_temp = pygame.transform.smoothscale(
+        roll_image_surface_original_temp, (lado_img_deseado_grande, lado_img_deseado_grande)
+    )
+        
+    # Aplicar colorkey si es necesario ANTES de convert_alpha
+    # roll_image_scaled_temp.set_colorkey(BLANCO) 
+    
+    roll_image_base_grande = roll_image_scaled_temp.convert_alpha()
+    print(f"Imagen 'roll.png' cargada, escalada a ({lado_img_deseado_grande}x{lado_img_deseado_grande}) y convertida con alfa.")
+except (pygame.error, FileNotFoundError) as e:
+    print(f"Error al cargar o escalar la imagen 'roll.png': {e}")
+    print("Asegúrate de que 'roll.png' está en el mismo directorio que el script.")
+    roll_image_base_grande = None
+
+# Font initialization
+font = pygame.font.Font(None, 24) # Reactivado
+
+# Text string definitions
+texto_latitud = "COORDENADAS" # Para caja GLL
+texto_rumbo_velocidad = "RUMBO / VELOCIDAD" # Para caja media
+texto_actitud = "ACTITUD (ATT)" # Para caja ATT
+# texto_longitud = "VELOCIDAD" # Reemplazado por texto_rumbo_velocidad o uso individual
+# texto_velocidad = "RUMBO" # Reemplazado por texto_rumbo_velocidad o uso individual
+
+
+# Usado para gestionar cuán rápido se actualiza la pantalla
 reloj = pygame.time.Clock()
+ 
+#Iteramos hasta que el usuario haga click sobre el botón de cerrar 
+hecho = False
+ 
+# angulo = 0 # Eliminado
+ 
+while not hecho:
+    for evento in pygame.event.get():  # El usuario hizo algo
+        if evento.type == pygame.QUIT: # Si el usuario hace click sobre cerrar
+            hecho = True               # Marca que ya lo hemos hecho, de forma que abandonamos el bucle
+        
+        if evento.type == pygame.MOUSEBUTTONDOWN:
+            if evento.button == 1: # Botón izquierdo del ratón
+                if not mostrar_ventana_config_serial and rect_boton_config.collidepoint(evento.pos):
+                    mostrar_ventana_config_serial = True
+                    input_puerto_str = str(puerto) # Cargar valor actual al abrir
+                    try:
+                        input_baudios_idx = lista_baudios_seleccionables.index(int(baudios))
+                    except ValueError:
+                        input_baudios_idx = 0 
+                    input_puerto_activo = False
+                    
+                    # Detectar puertos COM al abrir la ventana
+                    lista_puertos_detectados.clear()
+                    try:
+                        ports = comports()
+                        if ports:
+                            for p in ports:
+                                lista_puertos_detectados.append(p.device)
+                            print("Puertos detectados:", lista_puertos_detectados)
+                        else:
+                            print("No se detectaron puertos COM.")
+                            lista_puertos_detectados.append("N/A") # Placeholder si no hay puertos
+                    except Exception as e:
+                        print(f"Error al detectar puertos COM: {e}")
+                        lista_puertos_detectados.append("Error") # Placeholder en caso de error
+                    
+                    # Si el puerto actual no está en la lista, intentar añadirlo o seleccionar el primero
+                    if puerto not in lista_puertos_detectados and lista_puertos_detectados and lista_puertos_detectados[0] not in ["N/A", "Error"]:
+                        # Opcional: podríamos añadir el 'puerto' actual a la lista si no se detectó
+                        # o simplemente seleccionar el primero detectado si el actual no es válido.
+                        # Por ahora, input_puerto_str ya tiene el 'puerto' actual.
+                        pass
 
-#Iteramos hasta que el usuario haga click sobre el botón de cerrar hecho = False
 
-angulo = 0
+                elif mostrar_ventana_config_serial:
+                    # Clics dentro de la ventana de configuración
+                    if puerto_dropdown_activo:
+                        clic_en_item_puerto = False
+                        for i, item_rect in enumerate(lista_rects_items_puerto):
+                            if item_rect.collidepoint(evento.pos):
+                                input_puerto_str = lista_puertos_detectados[i]
+                                puerto_dropdown_activo = False
+                                clic_en_item_puerto = True
+                                break
+                        if not clic_en_item_puerto and not rect_input_puerto_config.collidepoint(evento.pos):
+                            puerto_dropdown_activo = False # Clic fuera del dropdown abierto
+                    
+                    elif rect_input_puerto_config.collidepoint(evento.pos): # Clic en el campo de puerto
+                        puerto_dropdown_activo = not puerto_dropdown_activo
+                        if puerto_dropdown_activo: baudios_dropdown_activo = False # Cerrar el otro
+                    
+                    elif baudios_dropdown_activo:
+                        clic_en_item_baudios = False
+                        for i, item_rect in enumerate(lista_rects_items_baudios):
+                            if item_rect.collidepoint(evento.pos):
+                                input_baudios_idx = i
+                                baudios_dropdown_activo = False
+                                clic_en_item_baudios = True
+                                break
+                        if not clic_en_item_baudios and not rect_input_baudios_display_config.collidepoint(evento.pos):
+                            baudios_dropdown_activo = False
+                            
+                    elif rect_input_baudios_display_config.collidepoint(evento.pos): # Clic en el campo de baudios
+                        baudios_dropdown_activo = not baudios_dropdown_activo
+                        if baudios_dropdown_activo: puerto_dropdown_activo = False # Cerrar el otro
+                    # ELIMINADAS LAS FLECHAS DE BAUDIOS:
+                    # elif rect_flecha_baudios_arriba_config.collidepoint(evento.pos):
+                    #     input_baudios_idx = (input_baudios_idx - 1) % len(lista_baudios_seleccionables)
+                    #     puerto_dropdown_activo = False 
+                    # elif rect_flecha_baudios_abajo_config.collidepoint(evento.pos):
+                    #     input_baudios_idx = (input_baudios_idx + 1) % len(lista_baudios_seleccionables)
+                    #     puerto_dropdown_activo = False
+                    elif rect_boton_cerrar_config.collidepoint(evento.pos):
+                        mostrar_ventana_config_serial = False
+                        puerto_dropdown_activo = False
+                        baudios_dropdown_activo = False
+                    elif rect_boton_guardar_config.collidepoint(evento.pos):
+                        nuevos_baudios = lista_baudios_seleccionables[input_baudios_idx]
+                        guardar_configuracion_serial(input_puerto_str, nuevos_baudios)
+                        puerto = input_puerto_str
+                        baudios = nuevos_baudios
+                        
+                        print(f"Aplicando nueva configuración: Puerto={puerto}, Baudios={baudios}")
+                        if ser and ser.is_open:
+                            ser.close()
+                        try:
+                            ser = serial.Serial(puerto, baudios)
+                            serial_port_available = True
+                            print(f"Puerto serial {puerto} reabierto con {baudios} baudios.")
+                        except serial.SerialException as e:
+                            print(f"Error reabriendo puerto serial {puerto} con {baudios} baud: {e}")
+                            serial_port_available = False
+                        except Exception as e:
+                            print(f"Error inesperado reabriendo puerto: {e}")
+                            serial_port_available = False
+                            
+                        mostrar_ventana_config_serial = False
+                        puerto_dropdown_activo = False
+                    else: # Clic en otra parte de la ventana de config (no en un control interactivo)
+                        puerto_dropdown_activo = False
 
-while not hecho: for evento in pygame.event.get(): # El usuario hizo algo if evento.type == pygame.QUIT: # Si el usuario hace click sobre cerrar hecho = True # Marca que ya lo hemos hecho, de forma que abandonamos el bucle
+        if evento.type == pygame.KEYDOWN:
+            # La entrada de teclado para el puerto ha sido eliminada, ahora es selección por lista.
+            # if mostrar_ventana_config_serial and input_puerto_activo: # input_puerto_activo ya no se usa así
+            # ... (código anterior de input de texto)
+            if evento.key == pygame.K_ESCAPE and mostrar_ventana_config_serial: # Cerrar con ESC
+                mostrar_ventana_config_serial = False
+                puerto_dropdown_activo = False
 
-# Read from serial port if available
-if serial_port_available and ser and ser.in_waiting > 0:
-    try:
-        line = ser.readline().decode('ascii', errors='replace').strip()
-        if line.startswith('$GPGLL') or line.startswith('$GNGLL'):
-            parse_gll(line)
-        elif line.startswith('$GPGGA') or line.startswith('$GNGGA'):
-            parse_gga(line)
-        elif line.startswith('$GPRMC') or line.startswith('$GNRMC'):
-            parse_rmc(line)
-        elif line.startswith('$GPVTG') or line.startswith('$GNVTG'):
-            parse_vtg(line)
-        elif line.startswith('$GPHDT') or line.startswith('$GNHDT'):
-            parse_hdt(line)
-        elif line.startswith('$GPHDG') or line.startswith('$GNHDG'):
-            parse_hdg(line)
-    except Exception as e:
-        print(f"Error reading or parsing serial data: {e}")
+    # Lógica de reconexión automática
+    if not serial_port_available and not mostrar_ventana_config_serial:
+        ahora = pygame.time.get_ticks()
+        if ahora - ultimo_intento_reconeccion_tiempo > INTERVALO_RECONECCION_MS:
+            print(f"Intentando reconectar al puerto {puerto} con {baudios} baudios...")
+            ultimo_intento_reconeccion_tiempo = ahora
+            try:
+                if ser and ser.is_open: 
+                    ser.close()
+                ser = serial.Serial(puerto, baudios)
+                serial_port_available = True
+                print(f"Reconexión exitosa al puerto {puerto}.")
+            except serial.SerialException as e_reconect: # Renombrar para evitar conflicto con 'se'
+                print(f"Fallo al reconectar: {e_reconect}")
+                ser = None 
+                serial_port_available = False 
+            except Exception as e_reconect_general: # Renombrar
+                print(f"Error inesperado durante el intento de reconexión: {e_reconect_general}")
+                ser = None
+                serial_port_available = False
 
-# Limpia la pantalla y establece su color de fondo
-pantalla.fill(AZUL)
+    # Read from serial port if available
+    if serial_port_available and ser and ser.is_open: # Añadido ser.is_open
+        try:
+            if ser.in_waiting > 0: # Mover in_waiting dentro del try
+                line = ser.readline().decode('ascii', errors='replace').strip()
+                # Parseo de sentencias
+                if line.startswith('$GPGLL') or line.startswith('$GNGLL'):
+                    parse_gll(line)
+                elif line.startswith('$GPGGA') or line.startswith('$GNGGA'):
+                    parse_gga(line) 
+                elif line.startswith('$GPRMC') or line.startswith('$GNRMC'):
+                    parse_rmc(line) 
+                elif line.startswith('$GPVTG') or line.startswith('$GNVTG'):
+                    parse_vtg(line)
+                elif line.startswith('$GPHDT') or line.startswith('$GNHDT'):
+                    parse_hdt(line)
+                elif line.startswith('$GPHDG') or line.startswith('$GNHDG'):
+                    parse_hdg(line)
+                elif line.startswith('$PFEC,GPatt'): 
+                    parse_pfec_gpatt(line)
+        except serial.SerialException as se:
+            print(f"SerialException durante la lectura: {se}. Puerto NMEA desconectado.")
+            if ser:
+                try:
+                    ser.close()
+                except: # Ignorar errores al cerrar un puerto ya problemático
+                    pass
+            ser = None 
+            serial_port_available = False 
+            ultimo_intento_reconeccion_tiempo = pygame.time.get_ticks() # Programar reintento
+        except Exception as e:
+            # No cerrar el puerto por errores de parseo, solo de lectura.
+            # Si el error es por ser.readline() o ser.in_waiting, sería una SerialException.
+            print(f"Error durante el parseo de datos seriales: {e}") 
+    # ELIMINADO EL ELIF, ya que la lógica de reconexión está arriba y es más general
+    # elif not serial_port_available and not mostrar_ventana_config_serial:
+        # Opcional: Mostrar un mensaje en la UI principal si el puerto no está disponible
+        # Por ejemplo, dibujar un texto rojo "Puerto Desconectado"
+        # Esto se haría en la sección de dibujo de la UI principal
+        pass
 
+    # Limpia la pantalla y establece su color de fondo
+    if imagen_fondo_escalada:
+        screen.blit(imagen_fondo_escalada, (0, 0))
+    else:
+        screen.fill(AZUL) # Fondo de respaldo si la imagen no se cargó
 
-dimensiones_caja = [10, 10, 600, 600]
-dimensiones_caja2 = [620, 10, 280, 200]
-dimensiones_caja3 = [620, 220, 280, 190]
-dimensiones_caja4 = [620, 420, 280, 200]
-# Dibujamos el borde de un círculo para 'barrerlo'
-pygame.draw.ellipse(pantalla, BLANCO, dimensiones_caja, 2)
+    if mostrar_ventana_config_serial:
+        # --- Dibujar Ventana de Configuración ---
+        pygame.draw.rect(screen, COLOR_VENTANA_FONDO, rect_ventana_config) 
+        pygame.draw.rect(screen, COLOR_BORDE_VENTANA, rect_ventana_config, 2) 
 
-# Dibujamos una caja negra alrededor del círculo
-pygame.draw.rect(pantalla, VERDE, dimensiones_caja2, 2)
-pygame.draw.rect(pantalla, VERDE, dimensiones_caja3, 2)
-pygame.draw.rect(pantalla, VERDE, dimensiones_caja4, 2)
-Render 'latitud' text
-text_surface_latitud = font.render(texto_latitud, True, BLANCO)
-text_rect_latitud = text_surface_latitud.get_rect()
-text_rect_latitud.centerx = dimensiones_caja2[0] + dimensiones_caja2[2] // 2
-text_rect_latitud.top = dimensiones_caja2[1] + 10 # Adjusted for title
-screen.blit(text_surface_latitud, text_rect_latitud)
+        # Título
+        titulo_surf = font.render("Configuración Puerto Serie", True, COLOR_TEXTO_NORMAL)
+        screen.blit(titulo_surf, (rect_ventana_config.centerx - titulo_surf.get_width() // 2, rect_ventana_config.top + 15))
 
-# Render Latitude and Longitude Data
-text_surface_lat_data = font.render(f"Lat: {latitude_str}", True, BLANCO)
-text_rect_lat_data = text_surface_lat_data.get_rect()
-text_rect_lat_data.topleft = (dimensiones_caja2[0] + 10, text_rect_latitud.bottom + 5)
-screen.blit(text_surface_lat_data, text_rect_lat_data)
+        # Botón Cerrar (X) - Mantener rojo para destacar o cambiar a estilo botón
+        pygame.draw.rect(screen, COLOR_BOTON_FONDO, rect_boton_cerrar_config)
+        pygame.draw.rect(screen, COLOR_BOTON_BORDE, rect_boton_cerrar_config, 1)
+        cerrar_text = font.render("X", True, COLOR_TEXTO_NORMAL)
+        screen.blit(cerrar_text, cerrar_text.get_rect(center=rect_boton_cerrar_config.center))
+        
+        # Puerto
+        label_puerto_surf = font.render("Puerto:", True, COLOR_TEXTO_NORMAL)
+        screen.blit(label_puerto_surf, (rect_ventana_config.left + 20, rect_input_puerto_config.centery - label_puerto_surf.get_height()//2))
+        
+        pygame.draw.rect(screen, COLOR_INPUT_FONDO, rect_input_puerto_config, 0) 
+        pygame.draw.rect(screen, COLOR_INPUT_BORDE, rect_input_puerto_config, 1) 
+        input_puerto_surf = font.render(input_puerto_str, True, COLOR_TEXTO_NORMAL)
+        screen.blit(input_puerto_surf, (rect_input_puerto_config.left + 5, rect_input_puerto_config.centery - input_puerto_surf.get_height() // 2))
+        pygame.draw.polygon(screen, COLOR_TEXTO_NORMAL, [
+            (rect_input_puerto_config.right - 15, rect_input_puerto_config.centery - 3),
+            (rect_input_puerto_config.right - 5, rect_input_puerto_config.centery - 3),
+            (rect_input_puerto_config.right - 10, rect_input_puerto_config.centery + 3)
+        ])
 
-text_surface_lon_data = font.render(f"Lon: {longitude_str}", True, BLANCO)
-text_rect_lon_data = text_surface_lon_data.get_rect()
-text_rect_lon_data.topleft = (dimensiones_caja2[0] + 10, text_rect_lat_data.bottom + 5)
-screen.blit(text_surface_lon_data, text_rect_lon_data)
+        if puerto_dropdown_activo:
+            lista_rects_items_puerto.clear()
+            item_height = input_puerto_surf.get_height() + 4 
+            dropdown_height = item_height * len(lista_puertos_detectados)
+            # Limitar altura del dropdown para que no se salga de la pantalla (simple)
+            max_dropdown_height = rect_ventana_config.height - (rect_input_puerto_config.bottom - rect_ventana_config.top) - 10
+            dropdown_height = min(dropdown_height, max_dropdown_height)
+            
+            rect_lista_puertos_desplegable = pygame.Rect(rect_input_puerto_config.left, rect_input_puerto_config.bottom, rect_input_puerto_config.width, dropdown_height)
+            
+            pygame.draw.rect(screen, COLOR_DROPDOWN_FONDO, rect_lista_puertos_desplegable) 
+            pygame.draw.rect(screen, COLOR_DROPDOWN_BORDE, rect_lista_puertos_desplegable, 1) 
 
-# Render 'VELOCIDAD' title
-text_surface_longitud = font.render(texto_longitud, True, BLANCO) # texto_longitud is "VELOCIDAD"
-text_rect_longitud = text_surface_longitud.get_rect()
-text_rect_longitud.centerx = dimensiones_caja3[0] + dimensiones_caja3[2] // 2
-text_rect_longitud.top = dimensiones_caja3[1] + 10 # Adjusted for title
-screen.blit(text_surface_longitud, text_rect_longitud)
+            for i, port_name in enumerate(lista_puertos_detectados):
+                item_rect = pygame.Rect(rect_lista_puertos_desplegable.left, rect_lista_puertos_desplegable.top + i * item_height, rect_lista_puertos_desplegable.width, item_height)
+                if item_rect.bottom > rect_lista_puertos_desplegable.bottom: # No dibujar items que se salen
+                    break
+                lista_rects_items_puerto.append(item_rect)
+                
+                item_surf = font.render(port_name, True, COLOR_TEXTO_NORMAL)
+                screen.blit(item_surf, (item_rect.left + 5, item_rect.centery - item_surf.get_height() // 2))
 
-# Render Speed Data
-text_surface_speed_data = font.render(speed_str, True, BLANCO)
-text_rect_speed_data = text_surface_speed_data.get_rect()
-text_rect_speed_data.topleft = (dimensiones_caja3[0] + 10, text_rect_longitud.bottom + 5)
-screen.blit(text_surface_speed_data, text_rect_speed_data)
+        # Baudios
+        label_baudios_surf = font.render("Baudios:", True, COLOR_TEXTO_NORMAL)
+        screen.blit(label_baudios_surf, (rect_ventana_config.left + 20, rect_input_baudios_display_config.centery - label_baudios_surf.get_height()//2))
+        
+        pygame.draw.rect(screen, COLOR_INPUT_FONDO, rect_input_baudios_display_config, 0) 
+        pygame.draw.rect(screen, COLOR_INPUT_BORDE, rect_input_baudios_display_config, 1) 
+        baudios_surf = font.render(str(lista_baudios_seleccionables[input_baudios_idx]), True, COLOR_TEXTO_NORMAL)
+        screen.blit(baudios_surf, baudios_surf.get_rect(center=rect_input_baudios_display_config.center))
+        pygame.draw.polygon(screen, COLOR_TEXTO_NORMAL, [
+            (rect_input_baudios_display_config.right - 15, rect_input_baudios_display_config.centery - 3),
+            (rect_input_baudios_display_config.right - 5, rect_input_baudios_display_config.centery - 3),
+            (rect_input_baudios_display_config.right - 10, rect_input_baudios_display_config.centery + 3)
+        ])
 
-# Render 'RUMBO' title
-text_surface_velocidad = font.render(texto_velocidad, True, BLANCO) # texto_velocidad is "RUMBO"
-text_rect_velocidad = text_surface_velocidad.get_rect()
-text_rect_velocidad.centerx = dimensiones_caja4[0] + dimensiones_caja4[2] // 2
-text_rect_velocidad.top = dimensiones_caja4[1] + 10 # Adjusted for title
-screen.blit(text_surface_velocidad, text_rect_velocidad)
+        if baudios_dropdown_activo:
+            lista_rects_items_baudios.clear()
+            item_height = baudios_surf.get_height() + 4
+            dropdown_height = item_height * len(lista_baudios_seleccionables)
+            max_dropdown_height = rect_ventana_config.height - (rect_input_baudios_display_config.bottom - rect_ventana_config.top) - 10
+            dropdown_height = min(dropdown_height, max_dropdown_height)
 
-# Render Heading Data
-text_surface_heading_data = font.render(heading_str, True, BLANCO)
-text_rect_heading_data = text_surface_heading_data.get_rect()
-text_rect_heading_data.topleft = (dimensiones_caja4[0] + 10, text_rect_velocidad.bottom + 5)
-screen.blit(text_surface_heading_data, text_rect_heading_data)
+            rect_lista_baudios_desplegable = pygame.Rect(rect_input_baudios_display_config.left, rect_input_baudios_display_config.bottom, rect_input_baudios_display_config.width, dropdown_height)
+            
+            pygame.draw.rect(screen, COLOR_DROPDOWN_FONDO, rect_lista_baudios_desplegable)
+            pygame.draw.rect(screen, COLOR_DROPDOWN_BORDE, rect_lista_baudios_desplegable, 1)
 
-# Calculamos las coordenadas finales (x,y) de nuestro 'barrido',
-# basándonos en el ángulo actual
-x = 300 * math.sin(angulo) + 310
-y = 300 * math.cos(angulo) + 310
+            for i, baud_rate in enumerate(lista_baudios_seleccionables):
+                item_rect = pygame.Rect(rect_lista_baudios_desplegable.left, rect_lista_baudios_desplegable.top + i * item_height, rect_lista_baudios_desplegable.width, item_height)
+                if item_rect.bottom > rect_lista_baudios_desplegable.bottom:
+                    break
+                lista_rects_items_baudios.append(item_rect)
+                
+                item_surf = font.render(str(baud_rate), True, COLOR_TEXTO_NORMAL)
+                screen.blit(item_surf, (item_rect.left + 5, item_rect.centery - item_surf.get_height() // 2))
+        
+        # Botón Guardar y Aplicar
+        pygame.draw.rect(screen, COLOR_BOTON_FONDO, rect_boton_guardar_config)
+        pygame.draw.rect(screen, COLOR_BOTON_BORDE, rect_boton_guardar_config, 1)
+        guardar_surf = font.render("Guardar y Aplicar", True, COLOR_TEXTO_NORMAL)
+        screen.blit(guardar_surf, guardar_surf.get_rect(center=rect_boton_guardar_config.center))
 
-# Dibujamos una línea desde el centro ubicado en las coordenadas 
-pygame.draw.line(pantalla, VERDE, [310, 310], [x, y], 2)
+    else:
+        # --- Dibujar UI Principal (cuando la ventana de config no está activa) ---
+        # Definiciones geométricas (usar las globales)
+        # dim_caja_gll, dim_caja_rumbo_vel, dim_caja_att son locales a este bloque y están bien.
 
-# Decrementamos el ángulo (counter-clockwise sweep)
-angulo = angulo - .03 # 0.03 is the step
+        # Dibujar Círculos Placeholders
+        pygame.draw.circle(screen, BLANCO, (centro_x_circulo1, centro_y_circulos), radio_circulo_img, 2)
+        pygame.draw.circle(screen, BLANCO, (centro_x_circulo2, centro_y_circulos), radio_circulo_img, 2)
 
-# Si el ángulo completa un barrido completo (va más allá de -360 grados), reinicia a 0
-if angulo <= -2 * PI:
-    angulo = 0
-     
-# Avancemos y actualicemos la pantalla con lo que hemos dibujado.
-pygame.display.flip()
+        # --- Lógica y preparación para imagen de Pitch (efecto claraboya) ---
+        if pitch_image_base_grande: 
+            try:
+                valor_pitch_float = float(att_pitch_str)
+                angulo_rotacion_pygame = -valor_pitch_float # CORREGIDO para imagen base a 0 grados
+                
+                imagen_pitch_rotada_grande = pygame.transform.rotate(pitch_image_base_grande, angulo_rotacion_pygame)
+                
+                diametro_claraboya = 2 * radio_circulo_img
+                claraboya_surface = pygame.Surface((diametro_claraboya, diametro_claraboya), pygame.SRCALPHA)
+                claraboya_surface.fill((0,0,0,0)) 
 
-# Limitamos a 60 fotogramas por segundo
-reloj.tick(60)
-if serial_port_available and ser is not None: ser.close()
+                offset_x = (diametro_claraboya - imagen_pitch_rotada_grande.get_width()) // 2
+                offset_y = (diametro_claraboya - imagen_pitch_rotada_grande.get_height()) // 2
+                claraboya_surface.blit(imagen_pitch_rotada_grande, (offset_x, offset_y))
+                
+                mask = pygame.Surface((diametro_claraboya, diametro_claraboya), pygame.SRCALPHA)
+                mask.fill((0,0,0,0))
+                pygame.draw.circle(mask, (255, 255, 255, 255), (radio_circulo_img, radio_circulo_img), radio_circulo_img)
+
+                claraboya_surface.blit(mask, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
+
+                rect_claraboya_final = claraboya_surface.get_rect(center=(centro_x_circulo1, centro_y_circulos))
+                screen.blit(claraboya_surface, rect_claraboya_final)
+            except ValueError:
+                pass 
+        
+        # Dibujar el borde del círculo de la claraboya (sobre la imagen)
+        pygame.draw.circle(screen, BLANCO, (centro_x_circulo1, centro_y_circulos), radio_circulo_img, 2)
+
+        # Dibujar marcas de grados para la claraboya de pitch
+        for key, (angle_deg, etiqueta_str) in ANGULOS_MARCAS_ETIQUETAS_DEF.items(): # Usar el dict global
+            angle_rad = math.radians(angle_deg)
+            
+            # Dibujar la línea de la marca
+            x_inicio_marca = centro_x_circulo1 + RADIO_INICIO_MARCAS * math.cos(angle_rad)
+            y_inicio_marca = centro_y_circulos + RADIO_INICIO_MARCAS * math.sin(angle_rad) 
+            x_fin_marca = centro_x_circulo1 + RADIO_FIN_MARCAS * math.cos(angle_rad)
+            y_fin_marca = centro_y_circulos + RADIO_FIN_MARCAS * math.sin(angle_rad)
+            pygame.draw.line(screen, COLOR_MARCA_GRADO, (x_inicio_marca, y_inicio_marca), (x_fin_marca, y_fin_marca), GROSOR_MARCA_GRADO)
+            
+            # Renderizar y posicionar la etiqueta de texto
+            etiqueta_surf = font.render(etiqueta_str, True, COLOR_ETIQUETA_GRADO)
+            
+            # Calcular posición del centro del texto
+            x_texto_etiqueta = centro_x_circulo1 + RADIO_POSICION_TEXTO_ETIQUETA * math.cos(angle_rad)
+            y_texto_etiqueta = centro_y_circulos + RADIO_POSICION_TEXTO_ETIQUETA * math.sin(angle_rad)
+            
+            etiqueta_rect = etiqueta_surf.get_rect(center=(int(x_texto_etiqueta), int(y_texto_etiqueta)))
+            screen.blit(etiqueta_surf, etiqueta_rect)
+
+        # --- Lógica y preparación para imagen de Roll (efecto claraboya para el segundo círculo) ---
+        if roll_image_base_grande: 
+            try:
+                valor_roll_float = float(att_roll_str)
+                # Asumiendo roll positivo NMEA = estribor (derecha) -> rotación horaria en la pantalla
+                # Pygame rota antihorario, así que para rotación horaria, usamos ángulo negativo.
+                angulo_rotacion_pygame_roll = -valor_roll_float 
+                
+                imagen_roll_rotada_grande = pygame.transform.rotate(roll_image_base_grande, angulo_rotacion_pygame_roll)
+                
+                diametro_claraboya_roll = 2 * radio_circulo_img # Mismo tamaño de claraboya
+                claraboya_surface_roll = pygame.Surface((diametro_claraboya_roll, diametro_claraboya_roll), pygame.SRCALPHA)
+                claraboya_surface_roll.fill((0,0,0,0)) 
+
+                offset_x_roll = (diametro_claraboya_roll - imagen_roll_rotada_grande.get_width()) // 2
+                offset_y_roll = (diametro_claraboya_roll - imagen_roll_rotada_grande.get_height()) // 2
+                claraboya_surface_roll.blit(imagen_roll_rotada_grande, (offset_x_roll, offset_y_roll))
+                
+                mask_roll = pygame.Surface((diametro_claraboya_roll, diametro_claraboya_roll), pygame.SRCALPHA)
+                mask_roll.fill((0,0,0,0))
+                pygame.draw.circle(mask_roll, (255, 255, 255, 255), (radio_circulo_img, radio_circulo_img), radio_circulo_img)
+
+                claraboya_surface_roll.blit(mask_roll, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
+
+                rect_claraboya_final_roll = claraboya_surface_roll.get_rect(center=(centro_x_circulo2, centro_y_circulos))
+                screen.blit(claraboya_surface_roll, rect_claraboya_final_roll)
+            except ValueError:
+                pass 
+        
+        # Dibujar el borde del segundo círculo de la claraboya (sobre la imagen de roll)
+        pygame.draw.circle(screen, BLANCO, (centro_x_circulo2, centro_y_circulos), radio_circulo_img, 2)
+
+        # Dibujar marcas de grados para la claraboya de roll
+        for key, (angle_deg, etiqueta_str) in ANGULOS_MARCAS_ETIQUETAS_DEF.items(): 
+            angle_rad = math.radians(angle_deg)
+            # Usar centro_x_circulo2 para las marcas del círculo de roll
+            x_inicio_marca_roll = centro_x_circulo2 + RADIO_INICIO_MARCAS * math.cos(angle_rad)
+            y_inicio_marca_roll = centro_y_circulos + RADIO_INICIO_MARCAS * math.sin(angle_rad) 
+            x_fin_marca_roll = centro_x_circulo2 + RADIO_FIN_MARCAS * math.cos(angle_rad)
+            y_fin_marca_roll = centro_y_circulos + RADIO_FIN_MARCAS * math.sin(angle_rad)
+            pygame.draw.line(screen, COLOR_MARCA_GRADO, (x_inicio_marca_roll, y_inicio_marca_roll), (x_fin_marca_roll, y_fin_marca_roll), GROSOR_MARCA_GRADO)
+            
+            etiqueta_surf_roll = font.render(etiqueta_str, True, COLOR_ETIQUETA_GRADO)
+            x_texto_etiqueta_roll = centro_x_circulo2 + RADIO_POSICION_TEXTO_ETIQUETA * math.cos(angle_rad)
+            y_texto_etiqueta_roll = centro_y_circulos + RADIO_POSICION_TEXTO_ETIQUETA * math.sin(angle_rad)
+            etiqueta_rect_roll = etiqueta_surf_roll.get_rect(center=(int(x_texto_etiqueta_roll), int(y_texto_etiqueta_roll)))
+            screen.blit(etiqueta_surf_roll, etiqueta_rect_roll)
+
+        # Dibujamos los rectángulos para las cajas de datos
+        dim_caja_gll = [610, 10, 280, 100] # Estas son locales y se usan para dibujar las cajas y su contenido
+        dim_caja_rumbo_vel = [610, 120, 280, 150]
+        dim_caja_att = [610, 280, 280, 200]
+        pygame.draw.rect(screen, VERDE, dim_caja_gll, 2)
+        pygame.draw.rect(screen, VERDE, dim_caja_rumbo_vel, 2)
+        pygame.draw.rect(screen, VERDE, dim_caja_att, 2)
+
+        # --- Caja Superior (GLL - Coordenadas) ---
+        text_surface_titulo_gll = font.render(texto_latitud, True, BLANCO)
+        text_rect_titulo_gll = text_surface_titulo_gll.get_rect()
+        text_rect_titulo_gll.centerx = dim_caja_gll[0] + dim_caja_gll[2] // 2
+        text_rect_titulo_gll.top = dim_caja_gll[1] + 10
+        screen.blit(text_surface_titulo_gll, text_rect_titulo_gll)
+        text_surface_lat_data = font.render(f"Lat: {latitude_str}", True, BLANCO)
+        text_rect_lat_data = text_surface_lat_data.get_rect()
+        text_rect_lat_data.topleft = (dim_caja_gll[0] + 10, text_rect_titulo_gll.bottom + 5)
+        screen.blit(text_surface_lat_data, text_rect_lat_data)
+        text_surface_lon_data = font.render(f"Lon: {longitude_str}", True, BLANCO)
+        text_rect_lon_data = text_surface_lon_data.get_rect()
+        text_rect_lon_data.topleft = (dim_caja_gll[0] + 10, text_rect_lat_data.bottom + 5)
+        screen.blit(text_surface_lon_data, text_rect_lon_data)
+
+        # --- Caja Media (Rumbo y Velocidad) ---
+        text_surface_titulo_rv = font.render(texto_rumbo_velocidad, True, BLANCO)
+        text_rect_titulo_rv = text_surface_titulo_rv.get_rect()
+        text_rect_titulo_rv.centerx = dim_caja_rumbo_vel[0] + dim_caja_rumbo_vel[2] // 2
+        text_rect_titulo_rv.top = dim_caja_rumbo_vel[1] + 10
+        screen.blit(text_surface_titulo_rv, text_rect_titulo_rv)
+        text_surface_rumbo_data = font.render(f"Rumbo: {heading_str}", True, BLANCO)
+        text_rect_rumbo_data = text_surface_rumbo_data.get_rect()
+        text_rect_rumbo_data.topleft = (dim_caja_rumbo_vel[0] + 10, text_rect_titulo_rv.bottom + 5)
+        screen.blit(text_surface_rumbo_data, text_rect_rumbo_data)
+        text_surface_vel_data = font.render(f"Vel: {speed_str}", True, BLANCO)
+        text_rect_vel_data = text_surface_vel_data.get_rect()
+        text_rect_vel_data.topleft = (dim_caja_rumbo_vel[0] + 10, text_rect_rumbo_data.bottom + 5)
+        screen.blit(text_surface_vel_data, text_rect_vel_data)
+
+        # --- Caja Inferior (Actitud - ATT) ---
+        text_surface_titulo_att = font.render(texto_actitud, True, BLANCO)
+        text_rect_titulo_att = text_surface_titulo_att.get_rect()
+        text_rect_titulo_att.centerx = dim_caja_att[0] + dim_caja_att[2] // 2
+        text_rect_titulo_att.top = dim_caja_att[1] + 10
+        screen.blit(text_surface_titulo_att, text_rect_titulo_att)
+        text_surface_att_hdg_data = font.render(f"ATT Hdg: {att_heading_str}", True, BLANCO)
+        text_rect_att_hdg_data = text_surface_att_hdg_data.get_rect()
+        text_rect_att_hdg_data.topleft = (dim_caja_att[0] + 10, text_rect_titulo_att.bottom + 5)
+        screen.blit(text_surface_att_hdg_data, text_rect_att_hdg_data)
+        text_surface_att_pitch_data = font.render(f"ATT Pitch: {att_pitch_str}", True, BLANCO)
+        text_rect_att_pitch_data = text_surface_att_pitch_data.get_rect()
+        text_rect_att_pitch_data.topleft = (dim_caja_att[0] + 10, text_rect_att_hdg_data.bottom + 5)
+        screen.blit(text_surface_att_pitch_data, text_rect_att_pitch_data)
+        text_surface_att_roll_data = font.render(f"ATT Roll: {att_roll_str}", True, BLANCO)
+        text_rect_att_roll_data = text_surface_att_roll_data.get_rect()
+        text_rect_att_roll_data.topleft = (dim_caja_att[0] + 10, text_rect_att_pitch_data.bottom + 5)
+        screen.blit(text_surface_att_roll_data, text_rect_att_roll_data)
+        
+        # --- Lógica de mensajes de estado (NO HAY DATOS / Puerto Desconectado) ---
+        if serial_port_available and ser and ser.is_open:
+            ahora = pygame.time.get_ticks()
+            if ahora - ultima_vez_datos_recibidos > UMBRAL_SIN_DATOS_MS:
+                mensaje_no_datos = "NO HAY DATOS NMEA"
+                texto_no_datos_surf = font.render(mensaje_no_datos, True, ROJO)
+                rect_texto_no_datos = texto_no_datos_surf.get_rect(center=area_izquierda_rect.center)
+                screen.blit(texto_no_datos_surf, rect_texto_no_datos)
+        elif not serial_port_available: 
+            ahora = pygame.time.get_ticks()
+            mensaje_desconexion = "Puerto NMEA desconectado."
+            texto_desconexion_surf = font.render(mensaje_desconexion, True, ROJO)
+            rect_texto_desconexion = texto_desconexion_surf.get_rect(center=area_izquierda_rect.center)
+            screen.blit(texto_desconexion_surf, rect_texto_desconexion)
+    
+        # --- Dibujar Botón de Configuración ---
+        pygame.draw.rect(screen, COLOR_BOTON_FONDO, rect_boton_config, 0)
+        pygame.draw.rect(screen, COLOR_BOTON_BORDE, rect_boton_config, 1)
+        texto_boton = font.render("Configurar Puerto", True, COLOR_TEXTO_NORMAL)
+        rect_texto_boton = texto_boton.get_rect(center=rect_boton_config.center)
+        screen.blit(texto_boton, rect_texto_boton)
+ 
+    # Dibujamos una línea desde el centro ubicado en las coordenadas 
+    # pygame.draw.line(pantalla, VERDE, [310, 310], [x, y], 2) # Eliminado
+ 
+    # Decrementamos el ángulo (counter-clockwise sweep)
+    # angulo = angulo - .03 # 0.03 is the step # Eliminado
+ 
+    # Si el ángulo completa un barrido completo (va más allá de -360 grados), reinicia a 0
+    # if angulo <= -2 * PI: # Eliminado
+    #     angulo = 0 # Eliminado
+         
+    # Avancemos y actualicemos la pantalla con lo que hemos dibujado.
+    pygame.display.flip()
+ 
+    # Limitamos a 60 fotogramas por segundo
+    reloj.tick(60)
+
+if serial_port_available and ser is not None: 
+    ser.close() # Reactivado
 pygame.quit()
