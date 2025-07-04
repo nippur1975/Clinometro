@@ -57,6 +57,9 @@ serial_port_available = True
 
 # Variables para la ventana de configuración del puerto serie
 mostrar_ventana_config_serial = False
+mostrar_ventana_acerca_de = False # Para Fase 2
+mostrar_ventana_alarma = False    # Para Fase 3
+
 input_puerto_str = str(puerto) # Inicializar con el puerto cargado
 lista_baudios_seleccionables = sorted([4800, 9600, 19200, 38400, 57600, 115200]) # Añadido 4800 y ordenado
 try:
@@ -65,7 +68,7 @@ except ValueError:
     input_baudios_idx = 0 # Default al primer elemento si el baudios cargado no está en la lista
 
 # Geometría (se definirá mejor luego, placeholders por ahora)
-rect_boton_config = pygame.Rect(610, 500, 280, 40) # Debajo de las cajas de datos
+# rect_boton_config = pygame.Rect(610, 500, 280, 40) # Eliminado
 # rect_ventana_config = pygame.Rect(200, 150, 500, 300) # Centrada # Antigua Posición
 rect_ventana_config = pygame.Rect(450, 100, 400, 350) # Más a la derecha, más estrecha, más alta
 
@@ -73,6 +76,9 @@ rect_ventana_config = pygame.Rect(450, 100, 400, 350) # Más a la derecha, más 
 COLOR_VENTANA_FONDO = (240, 240, 240) # Gris muy claro
 COLOR_TEXTO_NORMAL = NEGRO
 COLOR_BORDE_VENTANA = (170, 170, 170) # Gris medio
+COLOR_BARRA_HERRAMIENTAS_FONDO = (220, 220, 220) # Gris un poco más claro para la barra
+COLOR_BARRA_HERRAMIENTAS_BORDE = (180, 180, 180)
+COLOR_ITEM_MENU_TEXTO = NEGRO
 COLOR_BOTON_FONDO = (225, 225, 225) # Gris claro para botones
 COLOR_BOTON_BORDE = (150, 150, 150) # Gris más oscuro para borde de botón
 COLOR_INPUT_FONDO = BLANCO
@@ -275,6 +281,13 @@ ANGULOS_MARCAS_ETIQUETAS_DEF = {
     "sup_menos_30": (-60, "-30") # Etiqueta "-30" en la posición de -60 grados trig. (superior derecha)
 }
 
+# Constantes para flechas y letras de Pitch/Roll
+LONGITUD_FLECHA_DIR = 10
+ANCHO_FLECHA_DIR = 6  # Para la "cabeza" de la flecha
+OFFSET_FLECHA_TEXTO = 5 # Espacio entre el texto y la flecha
+OFFSET_LETRA_ROLL_Y = 3 # Espacio vertical para la letra S/P debajo del número de roll
+COLOR_LETRA_ROLL = BLANCO # Color para las letras S/P
+
 # Cargar y escalar imagen de fondo
 script_dir = os.path.dirname(os.path.abspath(__file__))
 ruta_imagen_fondo = os.path.join(script_dir, "mar.jpg")
@@ -342,6 +355,28 @@ except (pygame.error, FileNotFoundError) as e:
 
 # Font initialization
 font = pygame.font.Font(None, 24) # Reactivado
+font_bar_herramientas = pygame.font.Font(None, 22) # Fuente para la barra de herramientas
+
+# Barra de Herramientas Superior
+ALTURA_BARRA_HERRAMIENTAS = 30
+rect_barra_herramientas = pygame.Rect(0, 0, dimensiones[0], ALTURA_BARRA_HERRAMIENTAS)
+opciones_menu_barra = ["CONFIG. PUERTO", "CONFIG. ALARM", "ACERCA DE"]
+rects_opciones_menu_barra = []
+padding_menu_x = 15
+espacio_entre_menus = 10
+current_x_menu = padding_menu_x
+
+for opcion_texto in opciones_menu_barra:
+    texto_surf = font_bar_herramientas.render(opcion_texto, True, COLOR_ITEM_MENU_TEXTO)
+    # Se calculará el rect exacto en el bucle de dibujo o se pre-calcularán anchos
+    # Por ahora, solo preparamos los textos y la estructura
+    # Los rects se definirán mejor al dibujar para centrar el texto.
+    # Esto es solo para tener una idea.
+    # temp_rect = pygame.Rect(current_x_menu, 0, texto_surf.get_width() + padding_menu_x*2, ALTURA_BARRA_HERRAMIENTAS)
+    # rects_opciones_menu_barra.append(temp_rect)
+    # current_x_menu += temp_rect.width + espacio_entre_menus
+    pass # Los rects se calcularán dinámicamente en el bucle de dibujo
+
 
 # Text string definitions
 texto_latitud = "COORDENADAS" # Para caja GLL
@@ -366,40 +401,39 @@ while not hecho:
         
         if evento.type == pygame.MOUSEBUTTONDOWN:
             if evento.button == 1: # Botón izquierdo del ratón
-                if not mostrar_ventana_config_serial and rect_boton_config.collidepoint(evento.pos):
-                    mostrar_ventana_config_serial = True
-                    input_puerto_str = str(puerto) # Cargar valor actual al abrir
-                    try:
-                        input_baudios_idx = lista_baudios_seleccionables.index(int(baudios))
-                    except ValueError:
-                        input_baudios_idx = 0 
-                    input_puerto_activo = False
-                    
-                    # Detectar puertos COM al abrir la ventana
-                    lista_puertos_detectados.clear()
-                    try:
-                        ports = comports()
-                        if ports:
-                            for p in ports:
-                                lista_puertos_detectados.append(p.device)
-                            print("Puertos detectados:", lista_puertos_detectados)
-                        else:
-                            print("No se detectaron puertos COM.")
-                            lista_puertos_detectados.append("N/A") # Placeholder si no hay puertos
-                    except Exception as e:
-                        print(f"Error al detectar puertos COM: {e}")
-                        lista_puertos_detectados.append("Error") # Placeholder en caso de error
-                    
-                    # Si el puerto actual no está en la lista, intentar añadirlo o seleccionar el primero
-                    if puerto not in lista_puertos_detectados and lista_puertos_detectados and lista_puertos_detectados[0] not in ["N/A", "Error"]:
-                        # Opcional: podríamos añadir el 'puerto' actual a la lista si no se detectó
-                        # o simplemente seleccionar el primero detectado si el actual no es válido.
-                        # Por ahora, input_puerto_str ya tiene el 'puerto' actual.
-                        pass
+                # Clics en la Barra de Herramientas
+                if not mostrar_ventana_config_serial and not mostrar_ventana_acerca_de and not mostrar_ventana_alarma: # Solo si no hay otra ventana activa
+                    if rects_opciones_menu_barra and len(rects_opciones_menu_barra) > 0 and rects_opciones_menu_barra[0].collidepoint(evento.pos): # CONFIG. PUERTO
+                        mostrar_ventana_config_serial = True
+                        input_puerto_str = str(puerto) 
+                        try:
+                            input_baudios_idx = lista_baudios_seleccionables.index(int(baudios))
+                        except ValueError:
+                            input_baudios_idx = 0 
+                        puerto_dropdown_activo = False # Resetear estado de desplegables
+                        baudios_dropdown_activo = False
+                        
+                        lista_puertos_detectados.clear()
+                        try:
+                            ports = comports()
+                            if ports:
+                                for p in ports:
+                                    lista_puertos_detectados.append(p.device)
+                            else:
+                                lista_puertos_detectados.append("N/A") 
+                        except Exception as e_com:
+                            print(f"Error al detectar puertos COM: {e_com}")
+                            lista_puertos_detectados.append("Error") 
+                        
+                        if puerto not in lista_puertos_detectados and lista_puertos_detectados and lista_puertos_detectados[0] not in ["N/A", "Error"]:
+                            pass # input_puerto_str ya tiene el valor actual
+                    # elif len(rects_opciones_menu_barra) > 1 and rects_opciones_menu_barra[1].collidepoint(evento.pos): # CONFIG. ALARM (Fase 3)
+                        # mostrar_ventana_alarma = True 
+                    # elif len(rects_opciones_menu_barra) > 2 and rects_opciones_menu_barra[2].collidepoint(evento.pos): # ACERCA DE (Fase 2)
+                        # mostrar_ventana_acerca_de = True
 
-
-                elif mostrar_ventana_config_serial:
-                    # Clics dentro de la ventana de configuración
+                # Clics DENTRO de la ventana de config de puerto si está abierta
+                elif mostrar_ventana_config_serial: 
                     if puerto_dropdown_activo:
                         clic_en_item_puerto = False
                         for i, item_rect in enumerate(lista_rects_items_puerto):
@@ -540,6 +574,27 @@ while not hecho:
         screen.blit(imagen_fondo_escalada, (0, 0))
     else:
         screen.fill(AZUL) # Fondo de respaldo si la imagen no se cargó
+
+    # --- Dibujar Barra de Herramientas Superior ---
+    pygame.draw.rect(screen, COLOR_BARRA_HERRAMIENTAS_FONDO, rect_barra_herramientas)
+    pygame.draw.rect(screen, COLOR_BARRA_HERRAMIENTAS_BORDE, rect_barra_herramientas, 1) # Borde
+    
+    rects_opciones_menu_barra.clear() # Limpiar para recalcular en cada frame (importante si la ventana cambia de tamaño)
+    current_x_menu_draw = padding_menu_x
+    for opcion_texto in opciones_menu_barra:
+        texto_surf = font_bar_herramientas.render(opcion_texto, True, COLOR_ITEM_MENU_TEXTO)
+        texto_rect = texto_surf.get_rect(left=current_x_menu_draw, centery=rect_barra_herramientas.centery)
+        
+        # Crear un rect un poco más grande para la zona clickeable
+        clickable_rect = texto_rect.inflate(padding_menu_x * 2, ALTURA_BARRA_HERRAMIENTAS // 3) # Padding vertical menor
+        clickable_rect.centery = rect_barra_herramientas.centery # Asegurar centrado vertical
+        rects_opciones_menu_barra.append(clickable_rect) # Guardar para detección de clics
+
+        # Opcional: dibujar un fondo/borde para el item del menú si está activo o hover
+        # pygame.draw.rect(screen, (200,0,0), clickable_rect, 1) # Debug para ver el rect
+        
+        screen.blit(texto_surf, texto_rect)
+        current_x_menu_draw += texto_rect.width + espacio_entre_menus + padding_menu_x # Avanzar para el siguiente item
 
     if mostrar_ventana_config_serial:
         # --- Dibujar Ventana de Configuración ---
@@ -693,6 +748,43 @@ while not hecho:
             etiqueta_rect = etiqueta_surf.get_rect(center=(int(x_texto_etiqueta), int(y_texto_etiqueta)))
             screen.blit(etiqueta_surf, etiqueta_rect)
 
+        # Mostrar valor numérico y flecha para Pitch
+        if att_pitch_str != "N/A":
+            try:
+                valor_pitch_float = float(att_pitch_str)
+                # Texto del valor de Pitch
+                pitch_valor_surf = font.render(f"{valor_pitch_float:.1f}°", True, BLANCO)
+                y_pos_texto_pitch = centro_y_circulos + radio_circulo_img * 0.65 - 5 # Subido 5px
+                pitch_valor_rect = pitch_valor_surf.get_rect(center=(centro_x_circulo1, y_pos_texto_pitch))
+                screen.blit(pitch_valor_surf, pitch_valor_rect)
+
+                # Flecha de dirección de Pitch (a la izquierda del número)
+                pos_flecha_pitch_x = pitch_valor_rect.left - OFFSET_FLECHA_TEXTO - (LONGITUD_FLECHA_DIR // 2)
+                pos_flecha_pitch_y_centro = pitch_valor_rect.centery
+                
+                if valor_pitch_float > 0.1: # Flecha arriba para positivo (con un pequeño umbral)
+                    pygame.draw.line(screen, BLANCO, 
+                                     (pos_flecha_pitch_x, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2), 
+                                     (pos_flecha_pitch_x, pos_flecha_pitch_y_centro - LONGITUD_FLECHA_DIR // 2), 2)
+                    pygame.draw.line(screen, BLANCO, 
+                                     (pos_flecha_pitch_x - ANCHO_FLECHA_DIR // 2, pos_flecha_pitch_y_centro - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2), 
+                                     (pos_flecha_pitch_x, pos_flecha_pitch_y_centro - LONGITUD_FLECHA_DIR // 2), 2)
+                    pygame.draw.line(screen, BLANCO, 
+                                     (pos_flecha_pitch_x + ANCHO_FLECHA_DIR // 2, pos_flecha_pitch_y_centro - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2), 
+                                     (pos_flecha_pitch_x, pos_flecha_pitch_y_centro - LONGITUD_FLECHA_DIR // 2), 2)
+                elif valor_pitch_float < -0.1: # Flecha abajo para negativo (con un pequeño umbral)
+                    pygame.draw.line(screen, BLANCO, 
+                                     (pos_flecha_pitch_x, pos_flecha_pitch_y_centro - LONGITUD_FLECHA_DIR // 2), 
+                                     (pos_flecha_pitch_x, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2), 2)
+                    pygame.draw.line(screen, BLANCO, 
+                                     (pos_flecha_pitch_x - ANCHO_FLECHA_DIR // 2, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2), 
+                                     (pos_flecha_pitch_x, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2), 2)
+                    pygame.draw.line(screen, BLANCO, 
+                                     (pos_flecha_pitch_x + ANCHO_FLECHA_DIR // 2, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2), 
+                                     (pos_flecha_pitch_x, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2), 2)
+            except ValueError:
+                pass # No dibujar si no se puede convertir
+
         # --- Lógica y preparación para imagen de Roll (efecto claraboya para el segundo círculo) ---
         if roll_image_base_grande: 
             try:
@@ -741,10 +833,104 @@ while not hecho:
             etiqueta_rect_roll = etiqueta_surf_roll.get_rect(center=(int(x_texto_etiqueta_roll), int(y_texto_etiqueta_roll)))
             screen.blit(etiqueta_surf_roll, etiqueta_rect_roll)
 
+        # --- Lógica y preparación para imagen de Roll (efecto claraboya para el segundo círculo) ---
+        if roll_image_base_grande: 
+            try:
+                valor_roll_float = float(att_roll_str)
+                angulo_rotacion_pygame_roll = -valor_roll_float # Roll positivo (estribor) -> rotación horaria
+                
+                imagen_roll_rotada_grande = pygame.transform.rotate(roll_image_base_grande, angulo_rotacion_pygame_roll)
+                
+                diametro_claraboya_roll = 2 * radio_circulo_img
+                claraboya_surface_roll = pygame.Surface((diametro_claraboya_roll, diametro_claraboya_roll), pygame.SRCALPHA)
+                claraboya_surface_roll.fill((0,0,0,0)) 
+
+                offset_x_roll = (diametro_claraboya_roll - imagen_roll_rotada_grande.get_width()) // 2
+                offset_y_roll = (diametro_claraboya_roll - imagen_roll_rotada_grande.get_height()) // 2
+                claraboya_surface_roll.blit(imagen_roll_rotada_grande, (offset_x_roll, offset_y_roll))
+                
+                mask_roll = pygame.Surface((diametro_claraboya_roll, diametro_claraboya_roll), pygame.SRCALPHA)
+                mask_roll.fill((0,0,0,0))
+                pygame.draw.circle(mask_roll, (255, 255, 255, 255), (radio_circulo_img, radio_circulo_img), radio_circulo_img)
+
+                claraboya_surface_roll.blit(mask_roll, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
+
+                rect_claraboya_final_roll = claraboya_surface_roll.get_rect(center=(centro_x_circulo2, centro_y_circulos))
+                screen.blit(claraboya_surface_roll, rect_claraboya_final_roll)
+            except ValueError:
+                pass 
+        
+        # Dibujar el borde del segundo círculo de la claraboya (sobre la imagen de roll)
+        pygame.draw.circle(screen, BLANCO, (centro_x_circulo2, centro_y_circulos), radio_circulo_img, 2)
+
+        # Dibujar marcas de grados para la claraboya de roll
+        for key, (angle_deg, etiqueta_str) in ANGULOS_MARCAS_ETIQUETAS_DEF.items(): 
+            angle_rad = math.radians(angle_deg)
+            x_inicio_marca_roll = centro_x_circulo2 + RADIO_INICIO_MARCAS * math.cos(angle_rad)
+            y_inicio_marca_roll = centro_y_circulos + RADIO_INICIO_MARCAS * math.sin(angle_rad) 
+            x_fin_marca_roll = centro_x_circulo2 + RADIO_FIN_MARCAS * math.cos(angle_rad)
+            y_fin_marca_roll = centro_y_circulos + RADIO_FIN_MARCAS * math.sin(angle_rad)
+            pygame.draw.line(screen, COLOR_MARCA_GRADO, (x_inicio_marca_roll, y_inicio_marca_roll), (x_fin_marca_roll, y_fin_marca_roll), GROSOR_MARCA_GRADO)
+            
+            etiqueta_surf_roll = font.render(etiqueta_str, True, COLOR_ETIQUETA_GRADO)
+            x_texto_etiqueta_roll = centro_x_circulo2 + RADIO_POSICION_TEXTO_ETIQUETA * math.cos(angle_rad)
+            y_texto_etiqueta_roll = centro_y_circulos + RADIO_POSICION_TEXTO_ETIQUETA * math.sin(angle_rad)
+            etiqueta_rect_roll = etiqueta_surf_roll.get_rect(center=(int(x_texto_etiqueta_roll), int(y_texto_etiqueta_roll)))
+            screen.blit(etiqueta_surf_roll, etiqueta_rect_roll)
+
+        # Mostrar valor numérico, flecha y letra para Roll
+        if att_roll_str != "N/A":
+            try:
+                valor_roll_float = float(att_roll_str)
+                # Texto del valor de Roll
+                roll_valor_surf = font.render(f"{valor_roll_float:.1f}°", True, BLANCO)
+                y_pos_texto_roll = centro_y_circulos + radio_circulo_img * 0.65 - 5 # Subido 5px
+                roll_valor_rect = roll_valor_surf.get_rect(center=(centro_x_circulo2, y_pos_texto_roll))
+                screen.blit(roll_valor_surf, roll_valor_rect)
+
+                # Letra S/P debajo del valor de Roll
+                letra_roll_str = ""
+                if valor_roll_float > 0.1: # Estribor (Starboard)
+                    letra_roll_str = "S"
+                elif valor_roll_float < -0.1: # Babor (Port)
+                    letra_roll_str = "P"
+                
+                if letra_roll_str:
+                    letra_roll_surf = font.render(letra_roll_str, True, COLOR_LETRA_ROLL)
+                    letra_roll_rect = letra_roll_surf.get_rect(midtop=(roll_valor_rect.centerx, roll_valor_rect.bottom + OFFSET_LETRA_ROLL_Y))
+                    screen.blit(letra_roll_surf, letra_roll_rect)
+
+                # Flecha de dirección de Roll
+                pos_flecha_roll_y_centro = roll_valor_rect.centery
+                if valor_roll_float > 0.1: # Positivo (S) -> Flecha VERDE a la DERECHA
+                    pos_flecha_roll_x = roll_valor_rect.right + OFFSET_FLECHA_TEXTO + (LONGITUD_FLECHA_DIR // 2)
+                    pygame.draw.line(screen, VERDE, 
+                                     (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 
+                                     (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+                    pygame.draw.line(screen, VERDE, 
+                                     (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro - ANCHO_FLECHA_DIR // 2), 
+                                     (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+                    pygame.draw.line(screen, VERDE, 
+                                     (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro + ANCHO_FLECHA_DIR // 2), 
+                                     (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+                elif valor_roll_float < -0.1: # Negativo (P) -> Flecha ROJA a la IZQUIERDA
+                    pos_flecha_roll_x = roll_valor_rect.left - OFFSET_FLECHA_TEXTO - (LONGITUD_FLECHA_DIR // 2)
+                    pygame.draw.line(screen, ROJO, 
+                                     (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 
+                                     (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+                    pygame.draw.line(screen, ROJO, 
+                                     (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro - ANCHO_FLECHA_DIR // 2), 
+                                     (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+                    pygame.draw.line(screen, ROJO, 
+                                     (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro + ANCHO_FLECHA_DIR // 2), 
+                                     (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+            except ValueError:
+                pass
+
         # Dibujamos los rectángulos para las cajas de datos
         dim_caja_gll = [610, 10, 280, 100] # Estas son locales y se usan para dibujar las cajas y su contenido
         dim_caja_rumbo_vel = [610, 120, 280, 150]
-        dim_caja_att = [610, 280, 280, 200]
+        dim_caja_att = [610, 280, 280, 200] # Definición reinsertada
         pygame.draw.rect(screen, VERDE, dim_caja_gll, 2)
         pygame.draw.rect(screen, VERDE, dim_caja_rumbo_vel, 2)
         pygame.draw.rect(screen, VERDE, dim_caja_att, 2)
@@ -813,12 +999,12 @@ while not hecho:
             rect_texto_desconexion = texto_desconexion_surf.get_rect(center=area_izquierda_rect.center)
             screen.blit(texto_desconexion_surf, rect_texto_desconexion)
     
-        # --- Dibujar Botón de Configuración ---
-        pygame.draw.rect(screen, COLOR_BOTON_FONDO, rect_boton_config, 0)
-        pygame.draw.rect(screen, COLOR_BOTON_BORDE, rect_boton_config, 1)
-        texto_boton = font.render("Configurar Puerto", True, COLOR_TEXTO_NORMAL)
-        rect_texto_boton = texto_boton.get_rect(center=rect_boton_config.center)
-        screen.blit(texto_boton, rect_texto_boton)
+        # --- Dibujar Botón de Configuración --- (Eliminado, ahora en barra de herramientas)
+        # pygame.draw.rect(screen, COLOR_BOTON_FONDO, rect_boton_config, 0)
+        # pygame.draw.rect(screen, COLOR_BOTON_BORDE, rect_boton_config, 1)
+        # texto_boton = font.render("Configurar Puerto", True, COLOR_TEXTO_NORMAL)
+        # rect_texto_boton = texto_boton.get_rect(center=rect_boton_config.center)
+        # screen.blit(texto_boton, rect_texto_boton)
  
     # Dibujamos una línea desde el centro ubicado en las coordenadas 
     # pygame.draw.line(pantalla, VERDE, [310, 310], [x, y], 2) # Eliminado
@@ -839,3 +1025,4 @@ while not hecho:
 if serial_port_available and ser is not None: 
     ser.close() # Reactivado
 pygame.quit()
+
