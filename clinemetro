@@ -98,7 +98,7 @@ def guardar_configuracion_serial(puerto, baudios):
     try:
         with open(ARCHIVO_CONFIG_SERIAL, 'w') as f:
             json.dump(config, f, indent=4)
-        print(f"Configuración guardada: Puerto={puerto}, Baudios={baudios}")
+        # print(f"Configuración guardada: Puerto={puerto}, Baudios={baudios}")
     except IOError:
         print(f"Error al guardar la configuración en {ARCHIVO_CONFIG_SERIAL}")
 
@@ -112,16 +112,17 @@ def cargar_configuracion_alarma():
             valores_alarma["min_pitch_neg"] = str(config.get('min_pitch_neg', "-15"))
             valores_alarma["max_roll_pos"] = str(config.get('max_roll_pos', "15"))
             valores_alarma["min_roll_neg"] = str(config.get('min_roll_neg', "-15"))
-            print(f"Configuración de alarma cargada: {valores_alarma}")
+            # print(f"Configuración de alarma cargada: {valores_alarma}")
     except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
-        print(f"Error al cargar config de alarma o no existe, usando valores por defecto. Error: {e}")
+        # print(f"Error al cargar config de alarma o no existe, usando valores por defecto. Error: {e}")
+        pass # Añadido pass para corregir IndentationError
         # Los valores por defecto ya están en valores_alarma
 
 def guardar_configuracion_alarma():
     try:
         with open(ARCHIVO_CONFIG_ALARMA, 'w') as f:
             json.dump(valores_alarma, f, indent=4)
-        print(f"Configuración de alarma guardada: {valores_alarma}")
+        # print(f"Configuración de alarma guardada: {valores_alarma}")
     except IOError:
         print(f"Error al guardar la configuración de alarma en {ARCHIVO_CONFIG_ALARMA}")
 
@@ -183,6 +184,7 @@ def enviar_thingspeak():
         r = requests.get(THINGSPEAK_URL, params=payload) # THINGSPEAK_URL es global
         if r.status_code == 200:
             print(f"[OK] Datos enviados a ThingSpeak: {ts_timestamp_str}")
+            # pass
         else:
             print(f"[ERROR] Respuesta ThingSpeak: {r.status_code} - {r.text}")
     except Exception as e:
@@ -229,13 +231,13 @@ try:
     ruta_alarma_estribor = os.path.join(script_dir, "ALARMA_ESTRIBOR.mp3")
     sonido_alarma_babor = pygame.mixer.Sound(ruta_alarma_babor)
     sonido_alarma_estribor = pygame.mixer.Sound(ruta_alarma_estribor)
-    print("Archivos de alarma Roll MP3 cargados correctamente.")
+    # print("Archivos de alarma Roll MP3 cargados correctamente.")
     # Cargar sonidos de alarma de Pitch
     ruta_alarma_sentado = os.path.join(script_dir, "alarma_sentado.mp3")
     ruta_alarma_encabuzado = os.path.join(script_dir, "alarma_encabuzado.mp3")
     sonido_alarma_sentado = pygame.mixer.Sound(ruta_alarma_sentado)
     sonido_alarma_encabuzado = pygame.mixer.Sound(ruta_alarma_encabuzado)
-    print("Archivos de alarma Pitch MP3 cargados correctamente.")
+    # print("Archivos de alarma Pitch MP3 cargados correctamente.")
 except pygame.error as e:
     print(f"Error al cargar archivos de sonido MP3: {e}")
     print("Asegúrate de que los archivos de alarma (ALARMA_BABOR.mp3, ALARMA_ESTRIBOR.mp3, alarma_sentado.mp3, alarma_encabuzado.mp3) estén en el mismo directorio que el script.")
@@ -250,7 +252,7 @@ ultima_vez_datos_recibidos = pygame.time.get_ticks() # Inicialización correcta
 
 # Cargar configuración serial al inicio
 puerto, baudios = cargar_configuracion_serial()
-print(f"Configuración cargada: Puerto={puerto}, Baudios={baudios}")
+# print(f"Configuración cargada: Puerto={puerto}, Baudios={baudios}")
 
 # Cargar configuración de alarma al inicio
 cargar_configuracion_alarma()
@@ -322,7 +324,7 @@ except serial.SerialException as e:
     print(f"Error opening serial port {puerto} with {baudios} baud: {e}") 
     serial_port_available = False
 except Exception as e: 
-    print(f"An unexpected error occurred opening serial port: {e}")
+    print(f"An unexpected error occurred opening serial port: {e}") # Conservar este print de error inesperado
     serial_port_available = False
 
 # Initialize NMEA data variables for UI
@@ -355,7 +357,8 @@ def parse_pfec_gpatt(sentence):
             
             ultima_vez_datos_recibidos = pygame.time.get_ticks()
     except Exception as e:
-        print(f"Error parsing PFEC,GPatt: {sentence} - {e}")
+        # print(f"Error parsing PFEC,GPatt: {sentence} - {e}")
+        pass
 
 def _actualizar_coordenadas_ui_y_ts(lat_raw_val, lat_dir, lon_raw_val, lon_dir):
     global latitude_str, longitude_str, ts_lat_decimal, ts_lon_decimal
@@ -398,7 +401,8 @@ def parse_gga(sentence):
             _actualizar_coordenadas_ui_y_ts(parts[2], parts[3], parts[4], parts[5])
             ultima_vez_datos_recibidos = pygame.time.get_ticks()
     except Exception as e:
-        print(f"Error parsing GGA: {sentence} - {e}")
+        # print(f"Error parsing GGA: {sentence} - {e}")
+        pass
 
 def parse_rmc(sentence):
     global ultima_vez_datos_recibidos
@@ -408,7 +412,8 @@ def parse_rmc(sentence):
             _actualizar_coordenadas_ui_y_ts(parts[3], parts[4], parts[5], parts[6])
             ultima_vez_datos_recibidos = pygame.time.get_ticks()
     except Exception as e:
-        print(f"Error parsing RMC: {sentence} - {e}")
+        # print(f"Error parsing RMC: {sentence} - {e}")
+        pass
 
 def parse_gll(sentence): 
     global ultima_vez_datos_recibidos
@@ -418,7 +423,8 @@ def parse_gll(sentence):
             _actualizar_coordenadas_ui_y_ts(parts[1], parts[2], parts[3], parts[4])
             ultima_vez_datos_recibidos = pygame.time.get_ticks()
     except Exception as e: 
-        print(f"Error parsing GLL: {sentence} - {e}")
+        # print(f"Error parsing GLL: {sentence} - {e}")
+        pass
 
 def parse_vtg(sentence): 
     global speed_str, ultima_vez_datos_recibidos, ts_speed_float
@@ -448,7 +454,8 @@ def parse_vtg(sentence):
             ts_speed_float = 0.0
 
     except Exception as e: 
-        print(f"Error parsing VTG: {sentence} - {e}")
+        # print(f"Error parsing VTG: {sentence} - {e}")
+        pass
 
 def parse_hdt(sentence): 
     global heading_str, ultima_vez_datos_recibidos, ts_heading_float
@@ -465,7 +472,8 @@ def parse_hdt(sentence):
                 ts_heading_float = 0.0 
             ultima_vez_datos_recibidos = pygame.time.get_ticks()
     except Exception as e: 
-        print(f"Error parsing HDT: {sentence} - {e}")
+        # print(f"Error parsing HDT: {sentence} - {e}")
+        pass
 
 def parse_hdg(sentence): 
     global heading_str, ultima_vez_datos_recibidos, ts_heading_float
@@ -482,7 +490,8 @@ def parse_hdg(sentence):
                 ts_heading_float = 0.0
             ultima_vez_datos_recibidos = pygame.time.get_ticks()
     except Exception as e:
-        print(f"Error parsing HDG: {sentence} - {e}")
+        # print(f"Error parsing HDG: {sentence} - {e}")
+        pass
 
 def parse_gpzda(sentence):
     global ts_timestamp_str # No actualiza ultima_vez_datos_recibidos
@@ -498,7 +507,7 @@ def parse_gpzda(sentence):
                 h,m,s = time_utc_str[0:2], time_utc_str[2:4], time_utc_str[4:6]
                 ts_timestamp_str = f"{year_str}-{month_str.zfill(2)}-{day_str.zfill(2)} {h}:{m}:{s}"
     except Exception as e:
-        print(f"Error parsing GPZDA: {sentence} - {e}")
+        # print(f"Error parsing GPZDA: {sentence} - {e}")
         pass 
 # --- Fin NMEA Parsing Functions ---
 
@@ -545,7 +554,7 @@ try:
     imagen_fondo_escalada = pygame.transform.scale(imagen_fondo_original, dimensiones)
     imagen_fondo_escalada = imagen_fondo_escalada.convert() 
 except (pygame.error, FileNotFoundError) as e: 
-    print(f"Error al cargar la imagen de fondo '{ruta_imagen_fondo}': {e}") 
+    print(f"Error al cargar la imagen de fondo '{ruta_imagen_fondo}': {e}") # Conservar este print de error de carga
     imagen_fondo_escalada = None 
 
 pitch_image_base_grande = None 
@@ -556,7 +565,7 @@ try:
     pitch_image_scaled_temp = pygame.transform.smoothscale(pitch_image_surface_original_temp, (lado_pitch_deseado_grande, lado_pitch_deseado_grande))
     pitch_image_base_grande = pitch_image_scaled_temp.convert_alpha()
 except (pygame.error, FileNotFoundError) as e:
-    print(f"Error al cargar o escalar la imagen 'pitch.png': {e}")
+    print(f"Error al cargar o escalar la imagen 'pitch.png': {e}") # Conservar este print de error de carga
     pitch_image_base_grande = None
 
 roll_image_base_grande = None
@@ -567,7 +576,7 @@ try:
     roll_image_scaled_temp = pygame.transform.smoothscale(roll_image_surface_original_temp, (lado_img_deseado_grande, lado_img_deseado_grande))
     roll_image_base_grande = roll_image_scaled_temp.convert_alpha()
 except (pygame.error, FileNotFoundError) as e:
-    print(f"Error al cargar o escalar la imagen 'roll.png': {e}")
+    print(f"Error al cargar o escalar la imagen 'roll.png': {e}") # Conservar este print de error de carga
     roll_image_base_grande = None
 
 font = pygame.font.Font(None, 24) 
@@ -612,7 +621,8 @@ while not hecho:
                                 for p in ports: lista_puertos_detectados.append(p.device)
                             else: lista_puertos_detectados.append("N/A") 
                         except Exception as e_com:
-                            print(f"Error al detectar puertos COM: {e_com}"); lista_puertos_detectados.append("Error") 
+                            # print(f"Error al detectar puertos COM: {e_com}"); # Comentado
+                            lista_puertos_detectados.append("Error") 
                         if puerto not in lista_puertos_detectados and lista_puertos_detectados and lista_puertos_detectados[0] not in ["N/A", "Error"]: pass 
                     elif len(rects_opciones_menu_barra) > 1 and rects_opciones_menu_barra[1].collidepoint(evento.pos): 
                         mostrar_ventana_alarma = True
@@ -645,15 +655,15 @@ while not hecho:
                         nuevos_baudios = lista_baudios_seleccionables[input_baudios_idx]
                         guardar_configuracion_serial(input_puerto_str, nuevos_baudios)
                         puerto = input_puerto_str; baudios = nuevos_baudios
-                        print(f"Aplicando nueva configuración: Puerto={puerto}, Baudios={baudios}")
+                        # print(f"Aplicando nueva configuración: Puerto={puerto}, Baudios={baudios}")
                         if ser and ser.is_open: ser.close()
                         try:
                             ser = serial.Serial(puerto, baudios); serial_port_available = True
-                            print(f"Puerto serial {puerto} reabierto con {baudios} baudios.")
+                            # print(f"Puerto serial {puerto} reabierto con {baudios} baudios.")
                         except serial.SerialException as e:
                             print(f"Error reabriendo puerto serial {puerto} con {baudios} baud: {e}"); serial_port_available = False
                         except Exception as e:
-                            print(f"Error inesperado reabriendo puerto: {e}"); serial_port_available = False
+                            print(f"Error inesperado reabriendo puerto: {e}"); serial_port_available = False # Conservar este print
                         mostrar_ventana_config_serial = False; puerto_dropdown_activo = False
                     else: puerto_dropdown_activo = False
                 
@@ -663,15 +673,16 @@ while not hecho:
                     elif rect_boton_guardar_alarma and rect_boton_guardar_alarma.collidepoint(evento.pos):
                         valido = True
                         try:
-                            if not (5 <= int(valores_alarma["max_pitch_pos"]) <= 30): valido = False; print("Error: Max Pitch +")
-                            if not (-30 <= int(valores_alarma["min_pitch_neg"]) <= -5): valido = False; print("Error: Min Pitch -")
-                            if not (5 <= int(valores_alarma["max_roll_pos"]) <= 30): valido = False; print("Error: Max Roll +")
-                            if not (-30 <= int(valores_alarma["min_roll_neg"]) <= -5): valido = False; print("Error: Min Roll -")
-                        except ValueError: valido = False; print("Error: Valores no numéricos")
+                            if not (5 <= int(valores_alarma["max_pitch_pos"]) <= 30): valido = False; # print("Error: Max Pitch +")
+                            if not (-30 <= int(valores_alarma["min_pitch_neg"]) <= -5): valido = False; # print("Error: Min Pitch -")
+                            if not (5 <= int(valores_alarma["max_roll_pos"]) <= 30): valido = False; # print("Error: Max Roll +")
+                            if not (-30 <= int(valores_alarma["min_roll_neg"]) <= -5): valido = False; # print("Error: Min Roll -")
+                        except ValueError: valido = False; # print("Error: Valores no numéricos")
                         if valido:
                             guardar_configuracion_alarma(); mostrar_ventana_alarma = False; input_alarma_activo = None
-                            print("Configuración de alarma guardada.")
-                        else: print("No se guardó config de alarma.")
+                            # print("Configuración de alarma guardada.")
+                        else: # print("No se guardó config de alarma.")
+                            pass
                     elif rect_input_max_pitch_pos and rect_input_max_pitch_pos.collidepoint(evento.pos): input_alarma_activo = "max_pitch_pos"
                     elif rect_input_min_pitch_neg and rect_input_min_pitch_neg.collidepoint(evento.pos): input_alarma_activo = "min_pitch_neg"
                     elif rect_input_max_roll_pos and rect_input_max_roll_pos.collidepoint(evento.pos): input_alarma_activo = "max_roll_pos"
@@ -697,16 +708,17 @@ while not hecho:
     if not serial_port_available and not mostrar_ventana_config_serial and not mostrar_ventana_alarma and not mostrar_ventana_acerca_de: 
         ahora = pygame.time.get_ticks()
         if ahora - ultimo_intento_reconeccion_tiempo > INTERVALO_RECONECCION_MS:
-            print(f"Intentando reconectar al puerto {puerto} con {baudios} baudios...")
+            # print(f"Intentando reconectar al puerto {puerto} con {baudios} baudios...")
             ultimo_intento_reconeccion_tiempo = ahora
             try:
                 if ser and ser.is_open: ser.close()
                 ser = serial.Serial(puerto, baudios); serial_port_available = True
-                print(f"Reconexión exitosa al puerto {puerto}.")
+                # print(f"Reconexión exitosa al puerto {puerto}.")
             except serial.SerialException as e_reconect: 
-                print(f"Fallo al reconectar: {e_reconect}"); ser = None; serial_port_available = False 
+                # print(f"Fallo al reconectar: {e_reconect}"); # Comentado
+                ser = None; serial_port_available = False 
             except Exception as e_reconect_general: 
-                print(f"Error inesperado reconexión: {e_reconect_general}"); ser = None; serial_port_available = False
+                print(f"Error inesperado reconexión: {e_reconect_general}"); ser = None; serial_port_available = False # Conservar
 
     if serial_port_available and ser and ser.is_open: 
         try:
@@ -721,10 +733,11 @@ while not hecho:
                 elif line.startswith('$PFEC,GPatt'): parse_pfec_gpatt(line)
                 elif line.startswith('$GPZDA') or line.startswith('$GNZDA'): parse_gpzda(line) # Llamada a parse_gpzda
         except serial.SerialException as se:
-            print(f"SerialException lectura: {se}. Puerto desconectado."); ser.close(); ser = None; serial_port_available = False 
+            print(f"SerialException lectura: {se}. Puerto desconectado."); ser.close(); ser = None; serial_port_available = False # Conservar
             ultimo_intento_reconeccion_tiempo = pygame.time.get_ticks() 
         except Exception as e:
-            print(f"Error parseo datos seriales: {e}") 
+            # print(f"Error parseo datos seriales: {e}") # Comentado
+            pass
     
     # Lógica para enviar datos a ThingSpeak y CSV cada INTERVALO_ENVIO_DATOS_S
     if time.time() - ultima_vez_envio_datos >= INTERVALO_ENVIO_DATOS_S:
@@ -751,29 +764,31 @@ while not hecho:
             # Alarma de Babor (Roll Negativo Excesivo)
             if current_roll_float < umbral_min_roll: 
                 if not alarma_roll_babor_activa: # Si la condición recién se activa
-                    print(f"CONDICIÓN ALARMA BABOR INICIADA: Roll {current_roll_float}° < {umbral_min_roll}°")
+                    # print(f"CONDICIÓN ALARMA BABOR INICIADA: Roll {current_roll_float}° < {umbral_min_roll}°")
                     # ultima_reproduccion_alarma_babor_tiempo se mantiene en 0 o su valor anterior, 
                     # el gestor de sonido decidirá si suena de inmediato o tras intervalo.
+                    pass
                 alarma_roll_babor_activa = True
             else: 
                 if alarma_roll_babor_activa: # Si la condición estaba activa y ahora no lo está
-                    print(f"CONDICIÓN ALARMA BABOR CESADA: Roll {current_roll_float}° >= {umbral_min_roll}°")
+                    # print(f"CONDICIÓN ALARMA BABOR CESADA: Roll {current_roll_float}° >= {umbral_min_roll}°")
                     alarma_roll_babor_activa = False
                     ultima_reproduccion_alarma_babor_tiempo = 0 # Resetear para que suene inmediatamente la próxima vez
 
             # Alarma de Estribor (Roll Positivo Excesivo)
             if current_roll_float > umbral_max_roll: 
                 if not alarma_roll_estribor_activa:
-                    print(f"CONDICIÓN ALARMA ESTRIBOR INICIADA: Roll {current_roll_float}° > {umbral_max_roll}°")
+                    # print(f"CONDICIÓN ALARMA ESTRIBOR INICIADA: Roll {current_roll_float}° > {umbral_max_roll}°")
+                    pass
                 alarma_roll_estribor_activa = True
             else: 
                 if alarma_roll_estribor_activa: 
-                    print(f"CONDICIÓN ALARMA ESTRIBOR CESADA: Roll {current_roll_float}° <= {umbral_max_roll}°")
+                    # print(f"CONDICIÓN ALARMA ESTRIBOR CESADA: Roll {current_roll_float}° <= {umbral_max_roll}°")
                     alarma_roll_estribor_activa = False
                     ultima_reproduccion_alarma_estribor_tiempo = 0
                 
         except (ValueError, KeyError) as e:
-            print(f"Error al procesar valores de alarma o roll: {e}")
+            # print(f"Error al procesar valores de alarma o roll: {e}") # Comentado
             # Resetear estados de alarma de roll en caso de error con los umbrales
             alarma_roll_babor_activa = False
             alarma_roll_estribor_activa = False
@@ -793,41 +808,39 @@ while not hecho:
             # Alarma de Encabuzado (Pitch Negativo Excesivo)
             if current_pitch_float < umbral_min_pitch:
                 if not alarma_pitch_encabuzado_activa:
-                     print(f"CONDICIÓN ALARMA ENCABUZADO INICIADA: Pitch {current_pitch_float}° < {umbral_min_pitch}°")
+                     # print(f"CONDICIÓN ALARMA ENCABUZADO INICIADA: Pitch {current_pitch_float}° < {umbral_min_pitch}°")
+                     pass
                 alarma_pitch_encabuzado_activa = True
             else: 
                 if alarma_pitch_encabuzado_activa:
-                    print(f"CONDICIÓN ALARMA ENCABUZADO CESADA: Pitch {current_pitch_float}° >= {umbral_min_pitch}°")
+                    # print(f"CONDICIÓN ALARMA ENCABUZADO CESADA: Pitch {current_pitch_float}° >= {umbral_min_pitch}°")
                     alarma_pitch_encabuzado_activa = False
                     ultima_reproduccion_alarma_encabuzado_tiempo = 0 
 
             # Alarma de Sentado (Pitch Positivo Excesivo)
             if current_pitch_float > umbral_max_pitch:
                 if not alarma_pitch_sentado_activa:
-                    print(f"CONDICIÓN ALARMA SENTADO INICIADA: Pitch {current_pitch_float}° > {umbral_max_pitch}°")
+                    # print(f"CONDICIÓN ALARMA SENTADO INICIADA: Pitch {current_pitch_float}° > {umbral_max_pitch}°")
+                    pass
                 alarma_pitch_sentado_activa = True
             else: 
                 if alarma_pitch_sentado_activa:
-                    print(f"CONDICIÓN ALARMA SENTADO CESADA: Pitch {current_pitch_float}° <= {umbral_max_pitch}°")
+                    # print(f"CONDICIÓN ALARMA SENTADO CESADA: Pitch {current_pitch_float}° <= {umbral_max_pitch}°")
                     alarma_pitch_sentado_activa = False
                     ultima_reproduccion_alarma_sentado_tiempo = 0
 
         except (ValueError, KeyError) as e:
-            print(f"Error al procesar valores de alarma o pitch: {e}")
+            # print(f"Error al procesar valores de alarma o pitch: {e}") # Comentado
             alarma_pitch_sentado_activa = False
             alarma_pitch_encabuzado_activa = False
 
 # Lógica para enviar datos a ThingSpeak y CSV cada INTERVALO_ENVIO_DATOS_S
-    if time.time() - ultima_vez_envio_datos >= INTERVALO_ENVIO_DATOS_S:
-        if serial_port_available : 
-            estado_alarma_para_print = obtener_estado_alarma_actual() # Obtener estado de alarma
-            print(f"--- Guardando y Enviando Datos ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---")
-            # Actualizar el print para incluir el estado de la alarma
-            print(f"Valores: P:{ts_pitch_float}, R:{ts_roll_float}, Lat:{ts_lat_decimal}, Lon:{ts_lon_decimal}, Spd:{ts_speed_float}, Hdg:{ts_heading_float}, TS:{ts_timestamp_str}, Alarma: {estado_alarma_para_print}")
-            guardar_csv()
-            enviar_thingspeak() # Activado el envío a ThingSpeak
-            print("---------------------------------------------------\n")
-        ultima_vez_envio_datos = time.time()
+# La restauración de prints para esta sección se maneja arriba, donde se llama a guardar_csv y enviar_thingspeak.
+# Esta sección duplicada y comentada puede eliminarse o mantenerse comentada.
+# Por coherencia, si la de arriba está activa, esta debería estarlo o eliminarse.
+# Dado que la anterior ya fue restaurada, esta se puede dejar comentada o eliminar.
+# Para evitar confusión, me aseguro que la lógica de envío de datos solo esté activa en un lugar.
+# La sección de arriba (alrededor de la línea 730-740) es la que se ejecuta.
 
     # --- INICIO SECCIÓN DE LÓGICA DE ALARMAS ---
     ahora = time.time() # Tiempo actual para todas las decisiones de alarma
@@ -841,28 +854,28 @@ while not hecho:
 
             if current_roll_float < umbral_min_roll: 
                 if not alarma_roll_babor_activa:
-                    # print(f"CONDICIÓN ALARMA BABOR INICIADA: Roll {current_roll_float}° < {umbral_min_roll}°") # DEBUG
+                    # print(f"CONDICIÓN ALARMA BABOR INICIADA: Roll {current_roll_float}° < {umbral_min_roll}°") 
                     pass
                 alarma_roll_babor_activa = True
             else: 
                 if alarma_roll_babor_activa:
-                    # print(f"CONDICIÓN ALARMA BABOR CESADA: Roll {current_roll_float}° >= {umbral_min_roll}°") # DEBUG
+                    # print(f"CONDICIÓN ALARMA BABOR CESADA: Roll {current_roll_float}° >= {umbral_min_roll}°") 
                     alarma_roll_babor_activa = False
                     ultima_reproduccion_alarma_babor_tiempo = 0 
 
             if current_roll_float > umbral_max_roll: 
                 if not alarma_roll_estribor_activa:
-                    # print(f"CONDICIÓN ALARMA ESTRIBOR INICIADA: Roll {current_roll_float}° > {umbral_max_roll}°") # DEBUG
+                    # print(f"CONDICIÓN ALARMA ESTRIBOR INICIADA: Roll {current_roll_float}° > {umbral_max_roll}°") 
                     pass
                 alarma_roll_estribor_activa = True
             else: 
                 if alarma_roll_estribor_activa: 
-                    # print(f"CONDICIÓN ALARMA ESTRIBOR CESADA: Roll {current_roll_float}° <= {umbral_max_roll}°") # DEBUG
+                    # print(f"CONDICIÓN ALARMA ESTRIBOR CESADA: Roll {current_roll_float}° <= {umbral_max_roll}°") 
                     alarma_roll_estribor_activa = False
                     ultima_reproduccion_alarma_estribor_tiempo = 0
                 
         except (ValueError, KeyError) as e:
-            print(f"Error al procesar valores de alarma o roll: {e}")
+            # print(f"Error al procesar valores de alarma o roll: {e}") # Comentado
             alarma_roll_babor_activa = False
             alarma_roll_estribor_activa = False
             
@@ -875,33 +888,33 @@ while not hecho:
 
             if current_pitch_float < umbral_min_pitch:
                 if not alarma_pitch_encabuzado_activa:
-                    # print(f"CONDICIÓN ALARMA ENCABUZADO INICIADA: Pitch {current_pitch_float}° < {umbral_min_pitch}°") # DEBUG
+                    # print(f"CONDICIÓN ALARMA ENCABUZADO INICIADA: Pitch {current_pitch_float}° < {umbral_min_pitch}°") 
                     pass
                 alarma_pitch_encabuzado_activa = True
             else: 
                 if alarma_pitch_encabuzado_activa:
-                    # print(f"CONDICIÓN ALARMA ENCABUZADO CESADA: Pitch {current_pitch_float}° >= {umbral_min_pitch}°") # DEBUG
+                    # print(f"CONDICIÓN ALARMA ENCABUZADO CESADA: Pitch {current_pitch_float}° >= {umbral_min_pitch}°") 
                     alarma_pitch_encabuzado_activa = False
                     ultima_reproduccion_alarma_encabuzado_tiempo = 0 
 
             if current_pitch_float > umbral_max_pitch:
                 if not alarma_pitch_sentado_activa:
-                    # print(f"CONDICIÓN ALARMA SENTADO INICIADA: Pitch {current_pitch_float}° > {umbral_max_pitch}°") # DEBUG
+                    # print(f"CONDICIÓN ALARMA SENTADO INICIADA: Pitch {current_pitch_float}° > {umbral_max_pitch}°") 
                     pass
                 alarma_pitch_sentado_activa = True
             else: 
                 if alarma_pitch_sentado_activa:
-                    # print(f"CONDICIÓN ALARMA SENTADO CESADA: Pitch {current_pitch_float}° <= {umbral_max_pitch}°") # DEBUG
+                    # print(f"CONDICIÓN ALARMA SENTADO CESADA: Pitch {current_pitch_float}° <= {umbral_max_pitch}°") 
                     alarma_pitch_sentado_activa = False
                     ultima_reproduccion_alarma_sentado_tiempo = 0
 
         except (ValueError, KeyError) as e:
-            print(f"Error al procesar valores de alarma o pitch: {e}")
+            # print(f"Error al procesar valores de alarma o pitch: {e}") # Comentado
             alarma_pitch_sentado_activa = False
             alarma_pitch_encabuzado_activa = False
 
     # --- NUEVO GESTOR DE SONIDO DE ALARMA ALTERNADO ---
-    # print(f"DEBUG GESTOR: ahora={ahora:.2f}") # DEBUG GENERAL
+    # print(f"DEBUG GESTOR: ahora={ahora:.2f}") 
     alarmas_condiciones_activas_info = [] 
     if alarma_roll_babor_activa and sonido_alarma_babor:
         alarmas_condiciones_activas_info.append({'id': 'roll_babor', 'sonido': sonido_alarma_babor, 'tiempo_var_name': 'ultima_reproduccion_alarma_babor_tiempo', 'intervalo': INTERVALO_REPETICION_ALARMA_ROLL_S, 'mensaje': f"ALARMA BABOR (Roll {ts_roll_float}°)"})
@@ -912,20 +925,20 @@ while not hecho:
     if alarma_pitch_encabuzado_activa and sonido_alarma_encabuzado:
         alarmas_condiciones_activas_info.append({'id': 'pitch_encabuzado', 'sonido': sonido_alarma_encabuzado, 'tiempo_var_name': 'ultima_reproduccion_alarma_encabuzado_tiempo', 'intervalo': INTERVALO_REPETICION_ALARMA_PITCH_S, 'mensaje': f"ALARMA ENCABUZADO (Pitch {ts_pitch_float}°)"})
 
-    # print(f"DEBUG GESTOR: Condiciones activas detectadas: {len(alarmas_condiciones_activas_info)}") # DEBUG
-    # for al_info_debug in alarmas_condiciones_activas_info: # DEBUG
-    #    print(f"  DEBUG ACTIVA DETECTADA: {al_info_debug['id']}") # DEBUG
+    # print(f"DEBUG GESTOR: Condiciones activas detectadas: {len(alarmas_condiciones_activas_info)}") 
+    # for al_info_debug in alarmas_condiciones_activas_info: 
+    #    print(f"  DEBUG ACTIVA DETECTADA: {al_info_debug['id']}") 
 
     alarmas_listas_para_sonar_info = []
     for alarma_info in alarmas_condiciones_activas_info:
         if ahora - globals()[alarma_info['tiempo_var_name']] >= alarma_info['intervalo']:
             alarmas_listas_para_sonar_info.append(alarma_info)
-            # print(f"  DEBUG ALARMA LISTA PARA SONAR: {alarma_info['id']} (Ultima reprod: {globals()[alarma_info['tiempo_var_name']]:.2f}, Intervalo: {alarma_info['intervalo']})") # DEBUG
-    # print(f"DEBUG GESTOR: Alarmas listas para sonar: {len(alarmas_listas_para_sonar_info)}") # DEBUG
+            # print(f"  DEBUG ALARMA LISTA PARA SONAR: {alarma_info['id']} (Ultima reprod: {globals()[alarma_info['tiempo_var_name']]:.2f}, Intervalo: {alarma_info['intervalo']})") 
+    # print(f"DEBUG GESTOR: Alarmas listas para sonar: {len(alarmas_listas_para_sonar_info)}") 
             
     if not alarmas_condiciones_activas_info: 
         if sonido_alarma_actualmente_reproduciendo is not None:
-            print(f"GESTORSND DEBUG: Todas condiciones cesaron. Deteniendo {sonido_alarma_actualmente_reproduciendo}.")
+            # print(f"GESTORSND DEBUG: Todas condiciones cesaron. Deteniendo {sonido_alarma_actualmente_reproduciendo}.")
             sonido_alarma_actualmente_reproduciendo.stop()
             sonido_alarma_actualmente_reproduciendo = None
             INDICE_PROXIMA_ALARMA_A_SONAR = 0 
@@ -949,7 +962,7 @@ while not hecho:
                (ahora < tiempo_ultimo_sonido_iniciado + duracion_sonido_actual + PAUSA_ENTRE_SONIDOS_ALTERNADOS_S):
                 sonido_actual_ha_terminado_o_pausa_cumplida = False
         
-        # print(f"DEBUG GESTOR: sonido_actual_terminado_o_pausa_cumplida = {sonido_actual_ha_terminado_o_pausa_cumplida}") # DEBUG
+        # print(f"DEBUG GESTOR: sonido_actual_terminado_o_pausa_cumplida = {sonido_actual_ha_terminado_o_pausa_cumplida}") 
 
         if sonido_actual_ha_terminado_o_pausa_cumplida:
             if INDICE_PROXIMA_ALARMA_A_SONAR >= len(alarmas_listas_para_sonar_info):
@@ -958,10 +971,10 @@ while not hecho:
             alarma_a_reproducir_info = alarmas_listas_para_sonar_info[INDICE_PROXIMA_ALARMA_A_SONAR]
             
             if sonido_alarma_actualmente_reproduciendo is not None and sonido_alarma_actualmente_reproduciendo != alarma_a_reproducir_info['sonido']:
-                print(f"GESTORSND DEBUG: Cambiando. Deteniendo sonido anterior.")
+                # print(f"GESTORSND DEBUG: Cambiando. Deteniendo sonido anterior.")
                 sonido_alarma_actualmente_reproduciendo.stop()
 
-            print(f"GESTORSND DEBUG: INTENTANDO REPRODUCIR {alarma_a_reproducir_info['mensaje']}")
+            # print(f"GESTORSND DEBUG: INTENTANDO REPRODUCIR {alarma_a_reproducir_info['mensaje']}")
             alarma_a_reproducir_info['sonido'].play()
 
             sonido_alarma_actualmente_reproduciendo = alarma_a_reproducir_info['sonido']
@@ -1328,4 +1341,5 @@ while not hecho:
 if serial_port_available and ser is not None: 
     ser.close() 
 pygame.quit()
+
 
