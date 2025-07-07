@@ -10,6 +10,19 @@ import requests
 import csv
 from datetime import datetime
 import time
+import sys # Necesario para sys._MEIPASS
+
+# Función para obtener la ruta correcta a los recursos (para PyInstaller)
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        # sys._MEIPASS no está definido, así que estamos en desarrollo
+        base_path = os.path.dirname(os.path.abspath(__file__)) # Usar el directorio del script
+
+    return os.path.join(base_path, relative_path)
 
 # Definimos colores base
 NEGRO = (0, 0, 0)
@@ -32,10 +45,10 @@ TEXTOS = {
         "menu_acerca": "ACERCA DE",
         "lat_lon": "LAT / LON",
         "actitud": "CABECEO",
-        "rumbo": "RUMBO",
+        "rumbo": "RUMBO         ",
         "velocidad": "VELOCIDAD",
         "pitch": "PITCH",
-        "roll": "ROLL",
+        "roll": "ROLL ",
         "no_datos": "NO HAY DATOS NMEA",
         "desconectado": "Puerto NMEA desconectado",
         "titulo_config": "Configuración Puerto",
@@ -69,9 +82,9 @@ TEXTOS = {
         "lat_lon": "LAT / LON",
         "actitud": "ATTITUDE",
         "rumbo": "HEADING",
-        "velocidad": "SPEED",
+        "velocidad": "SPEED     ",
         "pitch": "PITCH",
-        "roll": "ROLL",
+        "roll": "ROLL ",
         "no_datos": "NO NMEA DATA",
         "desconectado": "NMEA port disconnected",
         "titulo_config": "Serial Settings",
@@ -166,24 +179,24 @@ intento_password_fallido = False
 # Inicialización de Pygame
 pygame.init()
 pygame.mixer.init()
-script_dir = os.path.dirname(os.path.abspath(__file__))
+# script_dir = os.path.dirname(os.path.abspath(__file__)) # Comentado, resource_path se usa para assets
 
 # Cargar sonidos de alarma según idioma
 try:
     # Sonidos en español
     sonidos_es = {
-        'babor': pygame.mixer.Sound(os.path.join(script_dir, "alarma_babor.mp3")),
-        'estribor': pygame.mixer.Sound(os.path.join(script_dir, "alarma_estribor.mp3")),
-        'sentado': pygame.mixer.Sound(os.path.join(script_dir, "alarma_sentado.mp3")),
-        'encabuzado': pygame.mixer.Sound(os.path.join(script_dir, "alarma_encabuzado.mp3"))
+        'babor': pygame.mixer.Sound(resource_path("alarma_babor.mp3")),
+        'estribor': pygame.mixer.Sound(resource_path("alarma_estribor.mp3")),
+        'sentado': pygame.mixer.Sound(resource_path("alarma_sentado.mp3")),
+        'encabuzado': pygame.mixer.Sound(resource_path("alarma_encabuzado.mp3"))
     }
     
     # Sonidos en inglés (equivalentes)
     sonidos_en = {
-        'babor': pygame.mixer.Sound(os.path.join(script_dir, "port_alarm.mp3")),
-        'estribor': pygame.mixer.Sound(os.path.join(script_dir, "starboard_alarm.mp3")),
-        'sentado': pygame.mixer.Sound(os.path.join(script_dir, "stern_alarm.mp3")),
-        'encabuzado': pygame.mixer.Sound(os.path.join(script_dir, "head_alarm.mp3"))
+        'babor': pygame.mixer.Sound(resource_path("port_alarm.mp3")),
+        'estribor': pygame.mixer.Sound(resource_path("starboard_alarm.mp3")),
+        'sentado': pygame.mixer.Sound(resource_path("stern_alarm.mp3")),
+        'encabuzado': pygame.mixer.Sound(resource_path("head_alarm.mp3"))
     }
     
     # Ajustar volumen de los sonidos
@@ -683,7 +696,7 @@ def main():
     radio_circulo_img = 78 * 2
     margen_superior_circulos = 20
     centro_y_circulos = area_izquierda_rect.top + radio_circulo_img + margen_superior_circulos
-    centro_x_circulo1 = 10 + radio_circulo_img + 50
+    centro_x_circulo1 = 10 + radio_circulo_img + 43 # 45 - 2 = 43
     centro_x_circulo2 = centro_x_circulo1 + (2 * radio_circulo_img) + 50
     
     # Configuración de marcas de grados
@@ -712,7 +725,7 @@ def main():
     
     # Cargar imágenes de fondo
     try:
-        imagen_fondo_original = pygame.image.load(os.path.join(script_dir, "mar.jpg"))
+        imagen_fondo_original = pygame.image.load(resource_path("mar.jpg"))
         imagen_fondo_escalada = pygame.transform.scale(imagen_fondo_original, dimensiones)
         imagen_fondo_escalada = imagen_fondo_escalada.convert()
     except:
@@ -721,7 +734,7 @@ def main():
     # Cargar imágenes de pitch y roll
     pitch_image_base_grande = None
     try:
-        pitch_image_surface_original_temp = pygame.image.load(os.path.join(script_dir, "pitch.png"))
+        pitch_image_surface_original_temp = pygame.image.load(resource_path("pitch.png"))
         lado_pitch_deseado_grande = int((2 * radio_circulo_img) + 2)
         pitch_image_base_grande = pygame.transform.smoothscale(pitch_image_surface_original_temp, (lado_pitch_deseado_grande, lado_pitch_deseado_grande)).convert_alpha()
     except:
@@ -729,7 +742,7 @@ def main():
     
     roll_image_base_grande = None
     try:
-        roll_image_surface_original_temp = pygame.image.load(os.path.join(script_dir, "roll.png"))
+        roll_image_surface_original_temp = pygame.image.load(resource_path("roll.png"))
         lado_img_deseado_grande = int((2 * radio_circulo_img) + 2)
         roll_image_base_grande = pygame.transform.smoothscale(roll_image_surface_original_temp, (lado_img_deseado_grande, lado_img_deseado_grande)).convert_alpha()
     except:
@@ -777,9 +790,9 @@ def main():
     COLOR_DROPDOWN_FONDO = (250, 250, 250)
     COLOR_DROPDOWN_BORDE = (100, 100, 100)
     COLOR_SELECCION_DROPDOWN = (200, 220, 255)
-    COLOR_CAJA_DATOS_FONDO = BLANCO
-    COLOR_CAJA_DATOS_BORDE = (120, 120, 120)
-    COLOR_CAJA_DATOS_TEXTO = NEGRO
+    COLOR_CAJA_DATOS_FONDO = NEGRO  # Cambiado a NEGRO
+    COLOR_CAJA_DATOS_BORDE = (120, 120, 120) # Se mantiene el borde gris, o se puede cambiar si se desea
+    COLOR_CAJA_DATOS_TEXTO = ROJO   # Cambiado a ROJO
     
     # Configuración del puerto serial
     ser = None
@@ -2015,7 +2028,7 @@ def main():
             screen.blit(titulo_acerca_surf, (rect_ventana_acerca_de.centerx - titulo_acerca_surf.get_width() // 2, rect_ventana_acerca_de.top + 15))
             
             texto_info = [
-                "Programa visor de Datos NMEA",
+                "NMEA Data Reader Program",
                 "Versión: 1.0",
                 "Realizado por: Hdelacruz",
                 "Email: hugo_delacruz@hotmail.com",
