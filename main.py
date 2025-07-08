@@ -238,8 +238,27 @@ TEXTOS = {
 # Configuración para logging y ThingSpeak
 API_KEY_THINGSPEAK = "5TRR6EXF6N5CZF54"
 THINGSPEAK_URL = "https://api.thingspeak.com/update"
-CSV_FILENAME = "nmea_log.csv"
-ALARM_LOG_FILENAME = "alarm_log.csv" # Archivo para logs de alarma
+
+
+# Configuración para logging y ThingSpeak
+API_KEY_THINGSPEAK = "5TRR6EXF6N5CZF54"
+THINGSPEAK_URL = "https://api.thingspeak.com/update"
+
+# Comenta o elimina las siguientes dos líneas:
+# CSV_FILENAME = "nmea_log.csv"
+# ALARM_LOG_FILENAME = "alarm_log.csv" 
+
+# Añade estas nuevas definiciones:
+CSV_FILENAME = resource_path("nmea_log.csv")
+ALARM_LOG_FILENAME = resource_path("alarm_log.csv")
+
+INTERVALO_ENVIO_DATOS_S = 15 
+# ... (el resto de constantes sigue igual)
+
+
+
+
+
 INTERVALO_ENVIO_DATOS_S = 15
 INTERVALO_REPETICION_ALARMA_ROLL_S = 5
 INTERVALO_REPETICION_ALARMA_PITCH_S = 5
@@ -725,43 +744,83 @@ def reset_ui_data():
     INDICE_PROXIMA_ALARMA_A_SONAR = 0
 
 def init_csv():
+    print(f"DEBUG: init_csv - Intentando inicializar/verificar: {CSV_FILENAME}")
     try:
-        with open(CSV_FILENAME, 'x', newline='') as f: 
-            writer = csv.writer(f)
-            writer.writerow(["FechaHora", "Pitch", "Roll", "Latitud", "Longitud", "Velocidad", "Rumbo"])
-    except FileExistsError: 
-        pass
+        file_exists = os.path.exists(CSV_FILENAME)
+        is_empty = False
+        if file_exists:
+            is_empty = os.path.getsize(CSV_FILENAME) == 0
+
+        with open(CSV_FILENAME, 'a', newline='') as f: 
+            if not file_exists or is_empty:
+                writer = csv.writer(f)
+                writer.writerow(["FechaHora", "Pitch", "Roll", "Latitud", "Longitud", "Velocidad", "Rumbo"])
+                print(f"DEBUG: init_csv - Cabecera escrita en: {CSV_FILENAME}")
+            else:
+                print(f"DEBUG: init_csv - Archivo ya existe y no está vacío: {CSV_FILENAME}")
+        print(f"DEBUG: init_csv - Finalizado para: {CSV_FILENAME}")
+    except Exception as e:
+        print(f"[ERROR] En init_csv para {CSV_FILENAME}: {e}")
+
+
 
 def init_alarm_csv():
-    """Inicializa el archivo CSV para el log de alarmas si no existe."""
+    print(f"DEBUG: init_alarm_csv - Intentando inicializar/verificar: {ALARM_LOG_FILENAME}")
     try:
-        with open(ALARM_LOG_FILENAME, 'x', newline='') as f: # Usa la nueva constante
-            writer = csv.writer(f)
-            writer.writerow(["TimestampUTC", "TipoAlarma", "EstadoAlarma", "ValorActual", "UmbralConfigurado"])
-    except FileExistsError:
-        pass
+        file_exists_before_open = os.path.exists(ALARM_LOG_FILENAME)
+        is_empty = False
+        if file_exists_before_open:
+            is_empty = os.path.getsize(ALARM_LOG_FILENAME) == 0
+        
+        with open(ALARM_LOG_FILENAME, 'a', newline='') as f:
+            if not file_exists_before_open or is_empty:
+                writer = csv.writer(f)
+                writer.writerow(["TimestampUTC", "TipoAlarma", "EstadoAlarma", "ValorActual", "UmbralConfigurado"])
+                print(f"DEBUG: init_alarm_csv - Cabecera escrita en: {ALARM_LOG_FILENAME}")
+            else:
+                print(f"DEBUG: init_alarm_csv - Archivo ya existe y no está vacío: {ALARM_LOG_FILENAME}")
+        print(f"DEBUG: init_alarm_csv - Finalizado para: {ALARM_LOG_FILENAME}")
+
+    except FileExistsError: 
+        print(f"DEBUG: init_alarm_csv - Archivo ya existe (manejado por FileExistsError): {ALARM_LOG_FILENAME}")
+        pass 
+    except Exception as e:
+        print(f"[ERROR] En init_alarm_csv para {ALARM_LOG_FILENAME}: {e}")
+
 
 def guardar_alarma_csv(timestamp, tipo_alarma, estado_alarma, valor_actual, umbral_configurado):
-    """Guarda una entrada en el archivo CSV de log de alarmas."""
+    print(f"DEBUG: guardar_alarma_csv - Intentando escribir en: {ALARM_LOG_FILENAME}")
+    print(f"DEBUG: Datos a guardar: TS={timestamp}, Tipo={tipo_alarma}, Estado={estado_alarma}, Val={valor_actual}, Umbral={umbral_configurado}")
     try:
-        with open(ALARM_LOG_FILENAME, 'a', newline='') as f: # Usa la nueva constante
+        with open(ALARM_LOG_FILENAME, 'a', newline='') as f: 
             writer = csv.writer(f)
             writer.writerow([timestamp, tipo_alarma, estado_alarma, valor_actual, umbral_configurado])
+        print(f"DEBUG: guardar_alarma_csv - Escritura exitosa en: {ALARM_LOG_FILENAME}")
     except Exception as e:
         print(f"[ERROR] No se pudo escribir en {ALARM_LOG_FILENAME}: {e}")
 
+
+
+
+
+
 def guardar_csv():
-    with open(CSV_FILENAME, 'a', newline='') as f: 
-        writer = csv.writer(f)
-        writer.writerow([
-            ts_timestamp_str, 
-            ts_pitch_float, 
-            ts_roll_float, 
-            ts_lat_decimal, 
-            ts_lon_decimal, 
-            ts_speed_float, 
-            ts_heading_float
-        ])
+    try:
+        with open(CSV_FILENAME, 'a', newline='') as f: 
+            writer = csv.writer(f)
+            writer.writerow([
+                ts_timestamp_str, 
+                ts_pitch_float, 
+                ts_roll_float, 
+                ts_lat_decimal, 
+                ts_lon_decimal, 
+                ts_speed_float, 
+                ts_heading_float
+            ])
+    except Exception as e:
+        print(f"[ERROR] No se pudo escribir en {CSV_FILENAME} (guardar_csv): {e}")
+
+
 
 def enviar_thingspeak():
     payload = {
@@ -2547,7 +2606,7 @@ def main():
             pygame.draw.line(screen, COLOR_BOTON_BORDE_CLARO_3D, rect_boton_cerrar_password_servicio.topleft, rect_boton_cerrar_password_servicio.topright, 1)
             pygame.draw.line(screen, COLOR_BOTON_BORDE_CLARO_3D, rect_boton_cerrar_password_servicio.topleft, pygame.math.Vector2(rect_boton_cerrar_password_servicio.left, rect_boton_cerrar_password_servicio.bottom -1), 1)
             pygame.draw.line(screen, COLOR_BOTON_BORDE_OSCURO_3D, pygame.math.Vector2(rect_boton_cerrar_password_servicio.left, rect_boton_cerrar_password_servicio.bottom -1), rect_boton_cerrar_password_servicio.bottomright, 1)
-            pygame.draw.line(screen, COLOR_BOTON_BORDE_OSCURO_3D, pygame.math.Vector2(rect_boton_cerrar_password_servicio.right -1, rect_boton_cerrar_servicio.top), rect_boton_cerrar_password_servicio.bottomright, 1)
+            pygame.draw.line(screen, COLOR_BOTON_BORDE_OSCURO_3D, pygame.math.Vector2(rect_boton_cerrar_password_servicio.right -1, rect_boton_cerrar_password_servicio.top), rect_boton_cerrar_password_servicio.bottomright, 1) # Typo corrected here
             cerrar_pwd_text = font.render("X", True, COLOR_TEXTO_NORMAL)
             screen.blit(cerrar_pwd_text, cerrar_pwd_text.get_rect(center=rect_boton_cerrar_password_servicio.center))
 
@@ -2695,3 +2754,4 @@ def main():
 # Punto de entrada del programa
 if __name__ == "__main__":
     main()
+
