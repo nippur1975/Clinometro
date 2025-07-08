@@ -13,6 +13,7 @@ import time
 import sys # Necesario para sys._MEIPASS
 
 # Función para obtener la ruta correcta a los recursos (para PyInstaller)
+# ESTA ES LA UBICACIÓN CORRECTA, AL PRINCIPIO
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
     try:
@@ -21,8 +22,131 @@ def resource_path(relative_path):
     except Exception:
         # sys._MEIPASS no está definido, así que estamos en desarrollo
         base_path = os.path.dirname(os.path.abspath(__file__)) # Usar el directorio del script
-
     return os.path.join(base_path, relative_path)
+
+import hashlib # Para generar la clave de licencia
+import uuid    # Para el identificador de máquina
+try:
+    import pyperclip # Para la funcionalidad de pegar
+    PYPERCLIP_AVAILABLE = True
+except ImportError:
+    PYPERCLIP_AVAILABLE = False
+    print("Advertencia: Biblioteca 'pyperclip' no encontrada. La funcionalidad de pegar no estará disponible.")
+
+try:
+    import tkinter as tk
+    from tkinter import filedialog
+    TKINTER_AVAILABLE = True
+except ImportError:
+    TKINTER_AVAILABLE = False
+    print("Advertencia: Biblioteca 'tkinter' no encontrada. La selección de archivo de licencia no estará disponible.")
+
+# --- Constantes para la Licencia ---
+LICENSE_FILE = resource_path("license.json") 
+SECRET_KEY = "my_super_secret_clinometer_key" # ¡¡ESTA CLAVE DEBE SER IDÉNTICA A LA USADA EN EL GENERADOR DE LICENCIAS!!
+ACTIVATED_SUCCESSFULLY = False # Variable global para controlar el estado de activación en la sesión actual
+
+# --- Funciones de Licencia (adaptadas de license_manager.py) ---
+def get_machine_specific_identifier() -> tuple[str, str]:
+    """
+    Genera un identificador de máquina completo (para la lógica de licencia) 
+    y un ID corto para mostrar al usuario.
+    """
+    try:
+        mac_num = uuid.getnode()
+        if mac_num != uuid.getnode() or mac_num == 0: # Comprobación más robusta
+            try:
+                import socket
+                hostname_hash = hashlib.sha1(socket.gethostname().encode()).hexdigest()
+                internal_id_str = hostname_hash
+                print("Advertencia: No se pudo obtener la MAC address de forma fiable. Usando ID derivado del hostname.")
+            except:
+                internal_id_str = str(uuid.uuid4())
+                print("Advertencia: No se pudo obtener MAC ni ID de hostname. Usando UUID aleatorio como identificador interno.")
+        else:
+            internal_id_str = ':'.join(('%012X' % mac_num)[i:i+2] for i in range(0, 12, 2))
+    except Exception as e:
+        print(f"Error obteniendo MAC/UUID: {e}. Usando UUID aleatorio como identificador interno.")
+        internal_id_str = str(uuid.uuid4())
+
+    display_id = hashlib.sha1(internal_id_str.encode('utf-8')).hexdigest()[:6].upper()
+    
+    return internal_id_str, display_id
+
+def generate_license_key(user_identifier: str) -> str:
+    m = hashlib.sha256()
+    m.update(user_identifier.encode('utf-8'))
+    m.update(SECRET_KEY.encode('utf-8'))
+    return m.hexdigest()[:32]
+
+def store_license_data(license_key: str, internal_machine_id: str):
+    data = {
+        "license_key": license_key,
+        "machine_identifier": internal_machine_id 
+    }
+    try:
+        with open(LICENSE_FILE, 'w') as f:
+            json.dump(data, f, indent=4)
+    except IOError:
+        print(f"Error al guardar la licencia en {LICENSE_FILE}")
+
+def load_license_data() -> dict | None:
+    if not os.path.exists(LICENSE_FILE):
+        return None
+    try:
+        with open(LICENSE_FILE, 'r') as f:
+            data = json.load(f)
+            return data
+    except (IOError, json.JSONDecodeError):
+        return None
+
+def verify_license_key(provided_license_key: str, internal_machine_id: str) -> bool:
+    expected_license_key = generate_license_key(internal_machine_id)
+    return provided_license_key == expected_license_key
+
+def check_license_status() -> bool:
+    """
+    Comprueba el estado de la licencia almacenada.
+    Devuelve True si la licencia es válida, False en caso contrario.
+    """
+    global ACTIVATED_SUCCESSFULLY
+    if ACTIVATED_SUCCESSFULLY:
+        return True
+
+    license_data = load_license_data()
+    if not license_data:
+        return False
+
+    stored_key = license_data.get("license_key")
+    stored_identifier = license_data.get("machine_identifier")
+
+    if not stored_key or not stored_identifier:
+        return False
+
+    current_internal_id, _ = get_machine_specific_identifier()
+    if stored_identifier != current_internal_id:
+        print("Advertencia: La licencia almacenada no corresponde a este identificador de máquina.")
+        return False
+
+    if verify_license_key(stored_key, stored_identifier):
+        ACTIVATED_SUCCESSFULLY = True
+        return True
+    else:
+        print("Advertencia: La clave de licencia almacenada es inválida para el identificador de máquina guardado.")
+        return False
+
+def save_id_to_file(display_id: str, filename="machine_id.txt"):
+    """Guarda el Display ID en un archivo de texto en el directorio del script."""
+    filepath = resource_path(filename) # Guardar junto al ejecutable/script
+    try:
+        with open(filepath, 'w') as f:
+            f.write(f"Su ID de Máquina para la activación es: {display_id}\n")
+            f.write("Por favor, proporcione este ID al administrador para obtener su clave de licencia.")
+        print(f"ID de Máquina guardado en: {filepath}")
+        return True
+    except IOError as e:
+        print(f"Error al guardar el ID de máquina en archivo: {e}")
+        return False
 
 # Definimos colores base
 NEGRO = (0, 0, 0)
@@ -115,6 +239,7 @@ TEXTOS = {
 API_KEY_THINGSPEAK = "5TRR6EXF6N5CZF54"
 THINGSPEAK_URL = "https://api.thingspeak.com/update"
 CSV_FILENAME = "nmea_log.csv"
+ALARM_LOG_FILENAME = "alarm_log.csv" # Archivo para logs de alarma
 INTERVALO_ENVIO_DATOS_S = 15
 INTERVALO_REPETICION_ALARMA_ROLL_S = 5
 INTERVALO_REPETICION_ALARMA_PITCH_S = 5
@@ -607,6 +732,24 @@ def init_csv():
     except FileExistsError: 
         pass
 
+def init_alarm_csv():
+    """Inicializa el archivo CSV para el log de alarmas si no existe."""
+    try:
+        with open(ALARM_LOG_FILENAME, 'x', newline='') as f: # Usa la nueva constante
+            writer = csv.writer(f)
+            writer.writerow(["TimestampUTC", "TipoAlarma", "EstadoAlarma", "ValorActual", "UmbralConfigurado"])
+    except FileExistsError:
+        pass
+
+def guardar_alarma_csv(timestamp, tipo_alarma, estado_alarma, valor_actual, umbral_configurado):
+    """Guarda una entrada en el archivo CSV de log de alarmas."""
+    try:
+        with open(ALARM_LOG_FILENAME, 'a', newline='') as f: # Usa la nueva constante
+            writer = csv.writer(f)
+            writer.writerow([timestamp, tipo_alarma, estado_alarma, valor_actual, umbral_configurado])
+    except Exception as e:
+        print(f"[ERROR] No se pudo escribir en {ALARM_LOG_FILENAME}: {e}")
+
 def guardar_csv():
     with open(CSV_FILENAME, 'a', newline='') as f: 
         writer = csv.writer(f)
@@ -653,6 +796,94 @@ def enviar_thingspeak():
     except Exception as e: 
         print(f"[ERROR] Conexión ThingSpeak: {e}")
 
+def draw_activation_window(screen, display_id_str, input_key_str, error_message=None):
+    """Dibuja la ventana de activación de licencia."""
+    font_titulo = pygame.font.Font(None, 36)
+    font_texto = pygame.font.Font(None, 28)
+    font_error = pygame.font.Font(None, 24)
+
+    ventana_width = 500
+    ventana_height = 300 # Aumentada para mensaje de error
+    ventana_x = (screen.get_width() - ventana_width) // 2
+    ventana_y = (screen.get_height() - ventana_height) // 2
+    rect_ventana = pygame.Rect(ventana_x, ventana_y, ventana_width, ventana_height)
+
+    # Colores
+    color_fondo_ventana = (220, 220, 220)
+    color_borde_ventana = (100, 100, 100)
+    color_texto = (0, 0, 0)
+    color_input_fondo = (255, 255, 255)
+    color_input_borde = (50, 50, 50)
+    color_boton_fondo = (180, 180, 180)
+    color_boton_texto = (0, 0, 0)
+    color_error_texto = (200, 0, 0)
+
+    # Dibujar ventana
+    pygame.draw.rect(screen, color_fondo_ventana, rect_ventana)
+    pygame.draw.rect(screen, color_borde_ventana, rect_ventana, 2)
+
+    # Título
+    titulo_surf = font_titulo.render("Activación Requerida", True, color_texto)
+    screen.blit(titulo_surf, (rect_ventana.centerx - titulo_surf.get_width() // 2, rect_ventana.top + 20))
+
+    # Mostrar ID de Máquina (Display ID)
+    id_label_surf = font_texto.render("Su ID de Máquina:", True, color_texto)
+    screen.blit(id_label_surf, (rect_ventana.left + 30, rect_ventana.top + 70))
+    id_value_surf = font_texto.render(display_id_str, True, color_texto)
+    screen.blit(id_value_surf, (rect_ventana.left + 30 + id_label_surf.get_width() + 10, rect_ventana.top + 70))
+
+    # Etiqueta para Clave de Licencia
+    key_label_surf = font_texto.render("Clave de Licencia:", True, color_texto)
+    screen.blit(key_label_surf, (rect_ventana.left + 30, rect_ventana.top + 120))
+
+    # Campo de entrada para Clave de Licencia
+    rect_input_key = pygame.Rect(rect_ventana.left + 30, rect_ventana.top + 150, ventana_width - 60, 35)
+    pygame.draw.rect(screen, color_input_fondo, rect_input_key)
+    pygame.draw.rect(screen, color_input_borde, rect_input_key, 1)
+    input_key_surf = font_texto.render(input_key_str, True, color_texto)
+    screen.blit(input_key_surf, (rect_input_key.left + 5, rect_input_key.centery - input_key_surf.get_height() // 2))
+
+    # Mensaje de error
+    if error_message:
+        error_surf = font_error.render(error_message, True, color_error_texto)
+        screen.blit(error_surf, (rect_ventana.centerx - error_surf.get_width() // 2, rect_input_key.bottom + 10))
+
+    # Botones
+    button_width = 120
+    button_height = 40
+    y_botones = rect_ventana.bottom - button_height - 20
+    
+    rect_boton_activar = pygame.Rect(rect_ventana.left + 50, y_botones, button_width, button_height)
+    rect_boton_salir_app = pygame.Rect(rect_ventana.right - 50 - button_width, y_botones, button_width, button_height)
+
+    pygame.draw.rect(screen, color_boton_fondo, rect_boton_activar)
+    pygame.draw.rect(screen, color_input_borde, rect_boton_activar, 1)
+    activar_text_surf = font_texto.render("Activar", True, color_boton_texto)
+    screen.blit(activar_text_surf, activar_text_surf.get_rect(center=rect_boton_activar.center))
+
+    pygame.draw.rect(screen, color_boton_fondo, rect_boton_salir_app)
+    pygame.draw.rect(screen, color_input_borde, rect_boton_salir_app, 1)
+    salir_text_surf = font_texto.render("Salir", True, color_boton_texto)
+    screen.blit(salir_text_surf, salir_text_surf.get_rect(center=rect_boton_salir_app.center))
+
+    # Botón Guardar ID
+    rect_boton_guardar_id = pygame.Rect(rect_ventana.centerx - button_width // 2, y_botones - button_height - 15, button_width + 40, button_height) # Un poco más ancho
+    pygame.draw.rect(screen, color_boton_fondo, rect_boton_guardar_id)
+    pygame.draw.rect(screen, color_input_borde, rect_boton_guardar_id, 1)
+    guardar_id_text_surf = font_texto.render("Guardar ID", True, color_boton_texto)
+    screen.blit(guardar_id_text_surf, guardar_id_text_surf.get_rect(center=rect_boton_guardar_id.center))
+
+    # Botón Usar Archivo de Licencia
+    rect_boton_usar_archivo = pygame.Rect(rect_ventana.centerx - (button_width + 60) // 2, y_botones - (button_height + 15) * 2, button_width + 60, button_height) # Más ancho
+    pygame.draw.rect(screen, color_boton_fondo, rect_boton_usar_archivo)
+    pygame.draw.rect(screen, color_input_borde, rect_boton_usar_archivo, 1)
+    usar_archivo_text_surf = font_texto.render("Usar Archivo Lic.", True, color_boton_texto) # Texto más corto
+    screen.blit(usar_archivo_text_surf, usar_archivo_text_surf.get_rect(center=rect_boton_usar_archivo.center))
+    
+    pygame.display.flip()
+    return rect_input_key, rect_boton_activar, rect_boton_salir_app, rect_boton_guardar_id, rect_boton_usar_archivo
+
+
 def main():
     global IDIOMA, sonido_alarma_actualmente_reproduciendo, tiempo_ultimo_sonido_iniciado
     global INDICE_PROXIMA_ALARMA_A_SONAR, ultima_reproduccion_alarma_babor_tiempo
@@ -673,18 +904,185 @@ def main():
     global input_alarma_activo # Para config alarma
     global input_password_str, intento_password_fallido, input_password_activo # Para password servicio
     global input_servicio_activo # Para config servicio datos
+    global ACTIVATED_SUCCESSFULLY
     
-    # Cargar configuraciones
-    puerto, baudios = cargar_configuracion_serial()
+    # Inicializar Pygame Temprano para Ventana de Activación (si es necesario)
+    pygame.init() # Asegurar que Pygame esté inicializado
+    dimensiones = [1060, 430] # Definir dimensiones antes para la ventana de activación
+    screen = pygame.display.set_mode(dimensiones) # Crear la pantalla
+    pygame.display.set_caption("Clinómetro") # Título genérico inicial
+
+    # --- Bucle de Activación de Licencia ---
+    if not check_license_status():
+        internal_id, display_id = get_machine_specific_identifier()
+        user_license_key_input = ""
+        activation_error_message = None
+        id_saved_message = None # Mensaje para "ID Guardado"
+        id_saved_message_timer = 0 # Temporizador para el mensaje
+        activation_window_active = True
+        input_key_active = False
+
+        while activation_window_active:
+            current_time_millis = pygame.time.get_ticks()
+            if id_saved_message and current_time_millis > id_saved_message_timer:
+                id_saved_message = None # Borrar mensaje después de un tiempo
+
+            # Pasar id_saved_message a draw_activation_window si quieres mostrarlo allí
+            # Por ahora, el mensaje de "ID Guardado" se maneja con un print y potencialmente un breve cambio de estado
+            # que podría ser dibujado si draw_activation_window lo soporta.
+            # Para simplificar, lo mantendremos como un print y un posible mensaje de error/estado en la ventana.
+            # Si se quiere un mensaje visual en la ventana, draw_activation_window necesitaría otro parámetro.
+            # Vamos a añadirlo a error_message temporalmente para la prueba visual.
+            
+            display_message_in_activation = activation_error_message if activation_error_message else id_saved_message
+
+            rect_input_key_field, rect_btn_activar, rect_btn_salir_app, rect_boton_guardar_id, rect_boton_usar_archivo = \
+                draw_activation_window(screen, display_id, user_license_key_input, display_message_in_activation)
+            
+            for evento_activacion in pygame.event.get():
+                if evento_activacion.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+                if evento_activacion.type == pygame.MOUSEBUTTONDOWN:
+                    if evento_activacion.button == 1:
+                        if rect_btn_activar.collidepoint(evento_activacion.pos):
+                            if verify_license_key(user_license_key_input, internal_id):
+                                store_license_data(user_license_key_input, internal_id)
+                                ACTIVATED_SUCCESSFULLY = True
+                                activation_window_active = False # Salir del bucle de activación
+                                print("Licencia activada exitosamente.")
+                                id_saved_message = None # Limpiar cualquier mensaje de "ID guardado"
+                            else:
+                                activation_error_message = "Clave de licencia inválida. Intente de nuevo."
+                                id_saved_message = None 
+                                user_license_key_input = "" # Limpiar input
+                                print("Intento de activación fallido.")
+                        elif rect_btn_salir_app.collidepoint(evento_activacion.pos):
+                            pygame.quit()
+                            sys.exit()
+                        elif rect_boton_usar_archivo.collidepoint(evento_activacion.pos):
+                            input_key_active = False
+                            activation_error_message = None
+                            id_saved_message = None
+                            print("DEBUG: Botón 'Usar Archivo de Licencia' presionado.")
+
+                            if TKINTER_AVAILABLE:
+                                root = tk.Tk()
+                                root.withdraw() # Ocultar la ventana principal de Tkinter
+                                filepath = filedialog.askopenfilename(
+                                    title="Seleccione el archivo de licencia (.json)",
+                                    filetypes=(("JSON files", "*.json"), ("All files", "*.*"))
+                                )
+                                root.destroy() # Destruir la instancia de Tkinter
+
+                                if filepath: # Si el usuario seleccionó un archivo
+                                    print(f"DEBUG: Archivo de licencia seleccionado: {filepath}")
+                                    try:
+                                        with open(filepath, 'r') as f_import:
+                                            data_importada = json.load(f_import)
+                                        
+                                        clave_importada = data_importada.get("license_key")
+                                        id_maquina_importado = data_importada.get("machine_identifier")
+
+                                        if clave_importada and id_maquina_importado:
+                                            if id_maquina_importado == internal_id:
+                                                if verify_license_key(clave_importada, id_maquina_importado):
+                                                    store_license_data(clave_importada, id_maquina_importado)
+                                                    ACTIVATED_SUCCESSFULLY = True
+                                                    activation_window_active = False
+                                                    print("Licencia activada exitosamente desde archivo.")
+                                                else:
+                                                    activation_error_message = "Clave en archivo de licencia es inválida."
+                                                    print("Error: Clave en archivo de licencia inválida.")
+                                            else:
+                                                activation_error_message = "Licencia no corresponde a esta máquina."
+                                                print("Error: ID de máquina en archivo de licencia no coincide.")
+                                        else:
+                                            activation_error_message = "Archivo de licencia con formato incorrecto."
+                                            print("Error: Archivo de licencia no tiene los campos esperados.")
+                                    except Exception as e_import:
+                                        activation_error_message = "Error al procesar archivo de licencia."
+                                        print(f"Error procesando archivo de licencia: {e_import}")
+                                else:
+                                    print("DEBUG: Selección de archivo cancelada por el usuario.")
+                                    # No se muestra mensaje de error si el usuario cancela
+                            else:
+                                activation_error_message = "Tkinter no disponible para abrir diálogo."
+                                print("Error: Tkinter no está disponible para la selección de archivos.")
+                            id_saved_message_timer = current_time_millis + 3000 # Reusar timer para mostrar mensaje
+
+                        elif rect_boton_guardar_id.collidepoint(evento_activacion.pos):
+                            if save_id_to_file(display_id):
+                                id_saved_message = f"ID guardado en machine_id.txt"
+                                activation_error_message = None 
+                            else:
+                                id_saved_message = "Error al guardar ID." 
+                                activation_error_message = None
+                            id_saved_message_timer = current_time_millis + 3000 
+                            input_key_active = False 
+                        elif rect_input_key_field.collidepoint(evento_activacion.pos):
+                            input_key_active = True
+                            activation_error_message = None 
+                            id_saved_message = None
+                        else:
+                            input_key_active = False
+                
+                if evento_activacion.type == pygame.KEYDOWN and input_key_active:
+                    activation_error_message = None # Limpiar errores al empezar a teclear
+                    id_saved_message = None
+                    if evento_activacion.key == pygame.K_RETURN:
+                        if verify_license_key(user_license_key_input, internal_id):
+                            store_license_data(user_license_key_input, internal_id)
+                            ACTIVATED_SUCCESSFULLY = True
+                            activation_window_active = False
+                            print("Licencia activada exitosamente (Enter).")
+                        else:
+                            activation_error_message = "Clave de licencia inválida. Intente de nuevo."
+                            user_license_key_input = ""
+                            print("Intento de activación fallido (Enter).")
+                    elif evento_activacion.key == pygame.K_BACKSPACE:
+                        user_license_key_input = user_license_key_input[:-1]
+                    elif evento_activacion.key == pygame.K_v and (pygame.key.get_mods() & pygame.KMOD_CTRL or pygame.key.get_mods() & pygame.KMOD_META):
+                        if PYPERCLIP_AVAILABLE:
+                            try:
+                                pasted_text = pyperclip.paste()
+                                # Añadir el texto pegado, respetando la longitud máxima de 32
+                                remaining_len = 32 - len(user_license_key_input)
+                                user_license_key_input += pasted_text[:remaining_len].upper() 
+                                user_license_key_input = user_license_key_input[:32] # Asegurar que no exceda
+                            except Exception as e_paste:
+                                print(f"Error al pegar desde el portapapeles: {e_paste}")
+                        else:
+                            print("Pegar no disponible: pyperclip no está instalado.")
+                    elif evento_activacion.unicode.isalnum() and len(user_license_key_input) < 32: # Aceptar alfanuméricos
+                        user_license_key_input += evento_activacion.unicode.upper()
+            
+            if not activation_window_active and not ACTIVATED_SUCCESSFULLY:
+                 # Si el usuario cerró la ventana sin activar (ej. con la X de la ventana, si el OS lo permite y no fue manejado)
+                 # o alguna otra salida no manejada del bucle.
+                 # Por el momento, si se sale del bucle sin ACTIVATED_SUCCESSFULLY, se volverá a entrar.
+                 # Si se quiere que el programa termine aquí si no se activa, se añade sys.exit()
+                 # Para el comportamiento "en standby", simplemente se re-iterará el bucle de activación.
+                 pass
+
+
+    if not ACTIVATED_SUCCESSFULLY:
+        print("El programa no pudo ser activado. Terminando.")
+        pygame.quit()
+        sys.exit()
+    
+    # --- Fin del Bucle de Activación de Licencia ---
+
+    # Cargar configuraciones (después de posible activación y antes de usar IDIOMA)
+    puerto, baudios = cargar_configuracion_serial() # Carga IDIOMA también
     cargar_configuracion_alarma()
     
     # Inicializar variables de datos
     reset_ui_data()
     init_csv()
+    init_alarm_csv() # Inicializar CSV de alarmas
     
-    # Inicializar Pygame
-    dimensiones = [1060, 430]
-    screen = pygame.display.set_mode(dimensiones)
+    # Configurar título de ventana con idioma correcto
     pygame.display.set_caption(TEXTOS[IDIOMA]["titulo_ventana"])
     
     # Configuración de áreas de visualización
@@ -1258,7 +1656,8 @@ def main():
                 if ser.in_waiting > 0:
                     line = ser.readline().decode('ascii', errors='replace').strip()
                     if line.startswith('$GPGLL') or line.startswith('$GNGLL'):
-                        parse_gll(line)
+                        # parse_gll(line) # Assuming you have or will create this function
+                        pass # Placeholder if parse_gll is not defined
                     elif line.startswith('$GPGGA') or line.startswith('$GNGGA'):
                         parse_gga(line)
                     elif line.startswith('$GPRMC') or line.startswith('$GNRMC'):
@@ -1322,14 +1721,42 @@ def main():
                 # Roll
                 umbral_min_roll_float = float(valores_alarma["min_roll_neg"])
                 umbral_max_roll_float = float(valores_alarma["max_roll_pos"])
-                alarma_roll_babor_activa = ts_roll_float < umbral_min_roll_float if att_roll_str != "N/A" else False
-                alarma_roll_estribor_activa = ts_roll_float > umbral_max_roll_float if att_roll_str != "N/A" else False
+                
+                # Alarma Roll Babor
+                condicion_babor = ts_roll_float < umbral_min_roll_float if att_roll_str != "N/A" else False
+                if condicion_babor and not alarma_roll_babor_activa:
+                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_BABOR", "ACTIVANDO", ts_roll_float, umbral_min_roll_float)
+                elif not condicion_babor and alarma_roll_babor_activa:
+                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_BABOR", "DESACTIVANDO", ts_roll_float, umbral_min_roll_float)
+                alarma_roll_babor_activa = condicion_babor
+
+                # Alarma Roll Estribor
+                condicion_estribor = ts_roll_float > umbral_max_roll_float if att_roll_str != "N/A" else False
+                if condicion_estribor and not alarma_roll_estribor_activa:
+                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_ESTRIBOR", "ACTIVANDO", ts_roll_float, umbral_max_roll_float)
+                elif not condicion_estribor and alarma_roll_estribor_activa:
+                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_ESTRIBOR", "DESACTIVANDO", ts_roll_float, umbral_max_roll_float)
+                alarma_roll_estribor_activa = condicion_estribor
 
                 # Pitch
                 umbral_min_pitch_float = float(valores_alarma["min_pitch_neg"])
                 umbral_max_pitch_float = float(valores_alarma["max_pitch_pos"])
-                alarma_pitch_encabuzado_activa = ts_pitch_float < umbral_min_pitch_float if att_pitch_str != "N/A" else False
-                alarma_pitch_sentado_activa = ts_pitch_float > umbral_max_pitch_float if att_pitch_str != "N/A" else False
+
+                # Alarma Pitch Encabuzado
+                condicion_encabuzado = ts_pitch_float < umbral_min_pitch_float if att_pitch_str != "N/A" else False
+                if condicion_encabuzado and not alarma_pitch_encabuzado_activa:
+                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_ENCABUZADO", "ACTIVANDO", ts_pitch_float, umbral_min_pitch_float)
+                elif not condicion_encabuzado and alarma_pitch_encabuzado_activa:
+                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_ENCABUZADO", "DESACTIVANDO", ts_pitch_float, umbral_min_pitch_float)
+                alarma_pitch_encabuzado_activa = condicion_encabuzado
+                
+                # Alarma Pitch Sentado
+                condicion_sentado = ts_pitch_float > umbral_max_pitch_float if att_pitch_str != "N/A" else False
+                if condicion_sentado and not alarma_pitch_sentado_activa:
+                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_SENTADO", "ACTIVANDO", ts_pitch_float, umbral_max_pitch_float)
+                elif not condicion_sentado and alarma_pitch_sentado_activa:
+                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_SENTADO", "DESACTIVANDO", ts_pitch_float, umbral_max_pitch_float)
+                alarma_pitch_sentado_activa = condicion_sentado
                 
             except (ValueError, KeyError) as e: # Si hay error en conversión o claves
                 # print(f"Error al procesar umbrales de alarma: {e}")
@@ -2120,7 +2547,7 @@ def main():
             pygame.draw.line(screen, COLOR_BOTON_BORDE_CLARO_3D, rect_boton_cerrar_password_servicio.topleft, rect_boton_cerrar_password_servicio.topright, 1)
             pygame.draw.line(screen, COLOR_BOTON_BORDE_CLARO_3D, rect_boton_cerrar_password_servicio.topleft, pygame.math.Vector2(rect_boton_cerrar_password_servicio.left, rect_boton_cerrar_password_servicio.bottom -1), 1)
             pygame.draw.line(screen, COLOR_BOTON_BORDE_OSCURO_3D, pygame.math.Vector2(rect_boton_cerrar_password_servicio.left, rect_boton_cerrar_password_servicio.bottom -1), rect_boton_cerrar_password_servicio.bottomright, 1)
-            pygame.draw.line(screen, COLOR_BOTON_BORDE_OSCURO_3D, pygame.math.Vector2(rect_boton_cerrar_password_servicio.right -1, rect_boton_cerrar_password_servicio.top), rect_boton_cerrar_password_servicio.bottomright, 1)
+            pygame.draw.line(screen, COLOR_BOTON_BORDE_OSCURO_3D, pygame.math.Vector2(rect_boton_cerrar_password_servicio.right -1, rect_boton_cerrar_servicio.top), rect_boton_cerrar_password_servicio.bottomright, 1)
             cerrar_pwd_text = font.render("X", True, COLOR_TEXTO_NORMAL)
             screen.blit(cerrar_pwd_text, cerrar_pwd_text.get_rect(center=rect_boton_cerrar_password_servicio.center))
 
