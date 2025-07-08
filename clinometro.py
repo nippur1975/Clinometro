@@ -12,16 +12,6 @@ from datetime import datetime
 import time
 import sys # Necesario para sys._MEIPASS
 
-# Determinar la ruta base de la aplicación (para logs y configs persistentes)
-if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-    # Estamos en un bundle de PyInstaller (ejecutable .exe)
-    # sys.executable es la ruta al .exe
-    application_path = os.path.dirname(sys.executable)
-else:
-    # Estamos en un entorno de desarrollo normal (ejecutando .py)
-    # __file__ es la ruta al script .py
-    application_path = os.path.dirname(os.path.abspath(__file__))
-
 # Función para obtener la ruta correcta a los recursos (para PyInstaller)
 # ESTA ES LA UBICACIÓN CORRECTA, AL PRINCIPIO
 def resource_path(relative_path):
@@ -147,8 +137,7 @@ def check_license_status() -> bool:
 
 def save_id_to_file(display_id: str, filename="machine_id.txt"):
     """Guarda el Display ID en un archivo de texto en el directorio del script."""
-    # Usar application_path para guardar machine_id.txt junto al exe/script
-    filepath = os.path.join(application_path, filename) 
+    filepath = resource_path(filename) # Guardar junto al ejecutable/script
     try:
         with open(filepath, 'w') as f:
             f.write(f"Su ID de Máquina para la activación es: {display_id}\n")
@@ -250,15 +239,32 @@ TEXTOS = {
 API_KEY_THINGSPEAK = "5TRR6EXF6N5CZF54"
 THINGSPEAK_URL = "https://api.thingspeak.com/update"
 
-# Rutas para archivos CSV y de configuración (persistentes, junto al exe/script)
-CSV_FILENAME = os.path.join(application_path, "nmea_log.csv")
-ALARM_LOG_FILENAME = os.path.join(application_path, "alarm_log.csv")
-ARCHIVO_CONFIG_SERIAL = os.path.join(application_path, "config_serial.json")
-ARCHIVO_CONFIG_ALARMA = os.path.join(application_path, "config_alarma.json")
+
+# Configuración para logging y ThingSpeak
+API_KEY_THINGSPEAK = "5TRR6EXF6N5CZF54"
+THINGSPEAK_URL = "https://api.thingspeak.com/update"
+
+# Comenta o elimina las siguientes dos líneas:
+# CSV_FILENAME = "nmea_log.csv"
+# ALARM_LOG_FILENAME = "alarm_log.csv" 
+
+# Añade estas nuevas definiciones:
+CSV_FILENAME = resource_path("nmea_log.csv")
+ALARM_LOG_FILENAME = resource_path("alarm_log.csv")
+
+INTERVALO_ENVIO_DATOS_S = 15 
+# ... (el resto de constantes sigue igual)
+
+
+
+
 
 INTERVALO_ENVIO_DATOS_S = 15
 INTERVALO_REPETICION_ALARMA_ROLL_S = 5
 INTERVALO_REPETICION_ALARMA_PITCH_S = 5
+
+ARCHIVO_CONFIG_SERIAL = "config_serial.json"
+ARCHIVO_CONFIG_ALARMA = "config_alarma.json"
 
 # Variables globales
 valores_alarma = {
@@ -317,6 +323,7 @@ intento_password_fallido = False
 # Inicialización de Pygame
 pygame.init()
 pygame.mixer.init()
+# script_dir = os.path.dirname(os.path.abspath(__file__)) # Comentado, resource_path se usa para assets
 
 # Cargar sonidos de alarma según idioma
 try:
@@ -384,7 +391,6 @@ def reproducir_alarma(tipo_alarma):
 def cargar_configuracion_serial():
     global IDIOMA, SERVICIO_DATOS_ACTUAL, API_KEY_THINGSPEAK, API_KEY_GOOGLE_CLOUD
     global input_api_key_thingspeak_str, input_api_key_google_cloud_str
-    print(f"DEBUG: Cargando config serial desde: {ARCHIVO_CONFIG_SERIAL}")
     try:
         with open(ARCHIVO_CONFIG_SERIAL, 'r') as f:
             config = json.load(f)
@@ -392,44 +398,45 @@ def cargar_configuracion_serial():
         
         # Cargar configuración del servicio de datos
         SERVICIO_DATOS_ACTUAL = config.get('servicio_datos', 'thingspeak')
-        API_KEY_THINGSPEAK = config.get('api_key_thingspeak', API_KEY_THINGSPEAK) 
+        API_KEY_THINGSPEAK = config.get('api_key_thingspeak', API_KEY_THINGSPEAK) # Usa el global actual como fallback si no está en el archivo
         API_KEY_GOOGLE_CLOUD = config.get('api_key_google_cloud', '')
         
+        # Inicializar los strings de input para la UI
         input_api_key_thingspeak_str = API_KEY_THINGSPEAK
         input_api_key_google_cloud_str = API_KEY_GOOGLE_CLOUD
         
-        print(f"DEBUG: Configuración serial cargada: Puerto={config.get('puerto', 'COM9')}, Baudios={int(config.get('baudios', 9600))}, Idioma={IDIOMA}")
         return config.get('puerto', 'COM9'), int(config.get('baudios', 9600))
-    except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
-        print(f"DEBUG: Error cargando config serial o archivo no encontrado ({e}). Usando defaults.")
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
         IDIOMA = 'es'
         SERVICIO_DATOS_ACTUAL = 'thingspeak'
-        input_api_key_thingspeak_str = API_KEY_THINGSPEAK 
+        # API_KEY_THINGSPEAK ya tiene un valor global por defecto
+        input_api_key_thingspeak_str = API_KEY_THINGSPEAK
         API_KEY_GOOGLE_CLOUD = ''
         input_api_key_google_cloud_str = ''
         return 'COM9', 9600
 
 def guardar_configuracion_serial(puerto, baudios):
+    # Los valores de SERVICIO_DATOS_ACTUAL, input_api_key_thingspeak_str, 
+    # y input_api_key_google_cloud_str se actualizan directamente 
+    # desde la UI antes de llamar a esta función.
     config = {
         'puerto': puerto, 
         'baudios': int(baudios),
         'idioma': IDIOMA,
         'servicio_datos': SERVICIO_DATOS_ACTUAL,
-        'api_key_thingspeak': input_api_key_thingspeak_str, 
-        'api_key_google_cloud': input_api_key_google_cloud_str 
+        'api_key_thingspeak': input_api_key_thingspeak_str, # Guardar el valor del input
+        'api_key_google_cloud': input_api_key_google_cloud_str # Guardar el valor del input
     }
     try:
         with open(ARCHIVO_CONFIG_SERIAL, 'w') as f: 
             json.dump(config, f, indent=4)
-        print(f"DEBUG: Configuración serial guardada en: {ARCHIVO_CONFIG_SERIAL}")
         return True
     except IOError as e:
-        print(f"ERROR: No se pudo guardar la configuración en {ARCHIVO_CONFIG_SERIAL}: {e}")
+        print(f"ERROR: No se pudo guardar la configuración: {e}")
         return False
 
 def cargar_configuracion_alarma():
     global valores_alarma, valores_ui_input_alarma
-    print(f"DEBUG: Cargando config alarma desde: {ARCHIVO_CONFIG_ALARMA}")
     try:
         with open(ARCHIVO_CONFIG_ALARMA, 'r') as f: 
             config = json.load(f)
@@ -440,9 +447,7 @@ def cargar_configuracion_alarma():
         
         valores_ui_input_alarma["pitch"] = str(abs(int(float(valores_alarma["max_pitch_pos"]))))
         valores_ui_input_alarma["roll"] = str(abs(int(float(valores_alarma["max_roll_pos"]))))
-        print(f"DEBUG: Configuración de alarma cargada.")
-    except Exception as e: 
-        print(f"DEBUG: Error cargando config alarma o archivo no encontrado ({e}). Usando defaults.")
+    except: 
         valores_alarma = {"max_pitch_pos": "15", "min_pitch_neg": "-15", "max_roll_pos": "15", "min_roll_neg": "-15"}
         valores_ui_input_alarma = {"pitch": "15", "roll": "15"}
 
@@ -463,14 +468,12 @@ def guardar_configuracion_alarma():
         
         with open(ARCHIVO_CONFIG_ALARMA, 'w') as f: 
             json.dump(valores_alarma, f, indent=4) 
-        print(f"DEBUG: Configuración de alarma guardada en: {ARCHIVO_CONFIG_ALARMA}")
         return True
     except (IOError, ValueError) as e:
-        print(f"Error al guardar configuración de alarma en {ARCHIVO_CONFIG_ALARMA}: {e}")
+        print(f"Error al guardar configuración de alarma: {e}")
         return False
 
-# Funciones de parseo NMEA (sin cambios, omitidas por brevedad en este bloque de texto)
-# ... (las funciones parse_pfec_gpatt, convertir_coord, parse_gga, etc. permanecen igual)
+# Funciones de parseo NMEA
 def parse_pfec_gpatt(sentence):
     global att_heading_str, att_pitch_str, att_roll_str, ultima_vez_datos_recibidos, ts_pitch_float, ts_roll_float
     try:
@@ -741,7 +744,6 @@ def reset_ui_data():
     INDICE_PROXIMA_ALARMA_A_SONAR = 0
 
 def init_csv():
-    # CSV_FILENAME ahora es una ruta absoluta
     print(f"DEBUG: init_csv - Intentando inicializar/verificar: {CSV_FILENAME}")
     try:
         file_exists = os.path.exists(CSV_FILENAME)
@@ -761,9 +763,8 @@ def init_csv():
         print(f"[ERROR] En init_csv para {CSV_FILENAME}: {e}")
 
 
+
 def init_alarm_csv():
-    """Inicializa el archivo CSV para el log de alarmas si no existe."""
-    # ALARM_LOG_FILENAME ahora es una ruta absoluta
     print(f"DEBUG: init_alarm_csv - Intentando inicializar/verificar: {ALARM_LOG_FILENAME}")
     try:
         file_exists_before_open = os.path.exists(ALARM_LOG_FILENAME)
@@ -786,9 +787,8 @@ def init_alarm_csv():
     except Exception as e:
         print(f"[ERROR] En init_alarm_csv para {ALARM_LOG_FILENAME}: {e}")
 
+
 def guardar_alarma_csv(timestamp, tipo_alarma, estado_alarma, valor_actual, umbral_configurado):
-    """Guarda una entrada en el archivo CSV de log de alarmas."""
-    # ALARM_LOG_FILENAME ahora es una ruta absoluta
     print(f"DEBUG: guardar_alarma_csv - Intentando escribir en: {ALARM_LOG_FILENAME}")
     print(f"DEBUG: Datos a guardar: TS={timestamp}, Tipo={tipo_alarma}, Estado={estado_alarma}, Val={valor_actual}, Umbral={umbral_configurado}")
     try:
@@ -799,9 +799,12 @@ def guardar_alarma_csv(timestamp, tipo_alarma, estado_alarma, valor_actual, umbr
     except Exception as e:
         print(f"[ERROR] No se pudo escribir en {ALARM_LOG_FILENAME}: {e}")
 
+
+
+
+
+
 def guardar_csv():
-    # CSV_FILENAME ahora es una ruta absoluta
-    # print(f"DEBUG: guardar_csv - Intentando escribir en: {CSV_FILENAME}") # Opcional, puede ser muy verboso
     try:
         with open(CSV_FILENAME, 'a', newline='') as f: 
             writer = csv.writer(f)
@@ -814,9 +817,10 @@ def guardar_csv():
                 ts_speed_float, 
                 ts_heading_float
             ])
-        # print(f"DEBUG: guardar_csv - Escritura exitosa en: {CSV_FILENAME}") # Opcional
     except Exception as e:
         print(f"[ERROR] No se pudo escribir en {CSV_FILENAME} (guardar_csv): {e}")
+
+
 
 def enviar_thingspeak():
     payload = {
