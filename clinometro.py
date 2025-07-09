@@ -12,6 +12,8 @@ from datetime import datetime
 import time
 import sys # Necesario para sys._MEIPASS
 
+
+
 # Función para obtener la ruta correcta a los recursos (para PyInstaller)
 # ESTA ES LA UBICACIÓN CORRECTA, AL PRINCIPIO
 def resource_path(relative_path):
@@ -516,6 +518,74 @@ def convertir_coord(coord_str, direccion, is_longitude=False):
         return round(decimal, 6)
     except: 
         return 0.0 
+    
+
+
+def parse_gll(sentence):
+    global ultima_vez_datos_recibidos
+    try:
+        # Verificar que es una sentencia GLL válida
+        if not sentence.startswith('$GPGLL'):
+            return
+            
+        parts = sentence.split(',')
+        
+        # Validación más robusta (6 campos mínimos + checksum)
+        if len(parts) < 7:
+            return
+            
+        # Verificar que los datos son válidos (campo 6 == 'A')
+        if parts[6] != 'A' or not parts[1] or not parts[3]:
+            return
+            
+        lat_raw_val = parts[1]  # ¡OJO! El índice era incorrecto en tu código
+        lat_dir = parts[2]      # parts[2] es la dirección, no parts[3]
+        lon_raw_val = parts[3]  # parts[3] es longitud, no parts[4]
+        lon_dir = parts[4]      # parts[4] es dirección, no parts[5]
+        
+        global latitude_str, longitude_str, ts_lat_decimal, ts_lon_decimal
+        latitude_str_temp, longitude_str_temp = "N/A", "N/A"
+        ts_lat_decimal_temp, ts_lon_decimal_temp = 0.0, 0.0
+        
+        # Procesamiento de latitud (igual que antes)
+        if lat_raw_val and lat_dir and len(lat_raw_val) >= 2:
+            lat_deg_ui = lat_raw_val[:2]
+            lat_min_full_ui = lat_raw_val[2:]
+            try: 
+                lat_min_formatted_ui = f"{float(lat_min_full_ui):.3f}"
+            except: 
+                lat_min_formatted_ui = lat_min_full_ui 
+            latitude_str_temp = f"{lat_deg_ui}° {lat_min_formatted_ui}' {lat_dir}"
+            ts_lat_decimal_temp = convertir_coord(lat_raw_val, lat_dir, is_longitude=False)
+        
+        # Procesamiento de longitud (igual que antes)
+        if lon_raw_val and lon_dir and len(lon_raw_val) >= 3:
+            lon_parts_ui = lon_raw_val.split('.')[0]
+            deg_chars = 0
+            if len(lon_parts_ui) >= 5: 
+                deg_chars = 3 
+            elif len(lon_parts_ui) >= 4: 
+                deg_chars = 2 
+            elif len(lon_parts_ui) >= 3: 
+                deg_chars = 1 
+            if deg_chars > 0:
+                lon_deg_ui = lon_raw_val[:deg_chars]
+                lon_min_full_ui = lon_raw_val[deg_chars:]
+                try: 
+                    lon_min_formatted_ui = f"{float(lon_min_full_ui):.3f}"
+                except: 
+                    lon_min_formatted_ui = lon_min_full_ui
+                longitude_str_temp = f"{lon_deg_ui}° {lon_min_formatted_ui}' {lon_dir}"
+                ts_lon_decimal_temp = convertir_coord(lon_raw_val, lon_dir, is_longitude=True)
+        
+        latitude_str, longitude_str = latitude_str_temp, longitude_str_temp
+        ts_lat_decimal, ts_lon_decimal = ts_lat_decimal_temp, ts_lon_decimal_temp
+        ultima_vez_datos_recibidos = pygame.time.get_ticks()
+        
+    except: 
+        pass
+
+    
 
 def parse_gga(sentence):
     global ultima_vez_datos_recibidos
@@ -1715,7 +1785,7 @@ def main():
                 if ser.in_waiting > 0:
                     line = ser.readline().decode('ascii', errors='replace').strip()
                     if line.startswith('$GPGLL') or line.startswith('$GNGLL'):
-                        # parse_gll(line) # Assuming you have or will create this function
+                        parse_gll(line) # Assuming you have or will create this function
                         pass # Placeholder if parse_gll is not defined
                     elif line.startswith('$GPGGA') or line.startswith('$GNGGA'):
                         parse_gga(line)
