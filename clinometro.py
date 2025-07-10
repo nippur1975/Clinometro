@@ -8,9 +8,11 @@ from serial.tools.list_ports import comports
 from pygame.locals import *
 import requests
 import csv
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import time
 import sys # Necesario para sys._MEIPASS
+
+
 
 # Función para obtener la ruta correcta a los recursos (para PyInstaller)
 # ESTA ES LA UBICACIÓN CORRECTA, AL PRINCIPIO
@@ -42,9 +44,43 @@ except ImportError:
     print("Advertencia: Biblioteca 'tkinter' no encontrada. La selección de archivo de licencia no estará disponible.")
 
 # --- Constantes para la Licencia ---
-LICENSE_FILE = resource_path("license.json") 
+LICENSE_FILE = resource_path("license.json")
+TRIAL_INFO_FILE = resource_path("trial_info.json") # Nuevo archivo para info del periodo de gracia
 SECRET_KEY = "my_super_secret_clinometer_key" # ¡¡ESTA CLAVE DEBE SER IDÉNTICA A LA USADA EN EL GENERADOR DE LICENCIAS!!
 ACTIVATED_SUCCESSFULLY = False # Variable global para controlar el estado de activación en la sesión actual
+PROGRAM_MODE = "LOADING" # Posibles valores: "LOADING", "LICENSED", "GRACE_PERIOD", "TRIAL_EXPIRED", "ACTIVATION_UI_VISIBLE"
+CURSOR_BLINK_INTERVAL = 500 # milisegundos, para el cursor en el campo de activación
+grace_period_start_time_obj: datetime | None = None # Para almacenar el objeto datetime UTC del inicio del trial
+
+
+# --- Funciones de Gestión de Trial ---
+def load_trial_info() -> dict | None:
+    """Carga la información del periodo de gracia desde trial_info.json."""
+    if not os.path.exists(TRIAL_INFO_FILE):
+        return None
+    try:
+        with open(TRIAL_INFO_FILE, 'r') as f:
+            data = json.load(f)
+            return data
+    except (IOError, json.JSONDecodeError):
+        return None
+
+def save_trial_info(timestamp_utc_str: str):
+    """Guarda el timestamp de inicio del periodo de gracia."""
+    data = {"grace_period_start_timestamp_utc": timestamp_utc_str}
+    try:
+        with open(TRIAL_INFO_FILE, 'w') as f:
+            json.dump(data, f, indent=4)
+    except IOError:
+        print(f"Error al guardar la información de trial en {TRIAL_INFO_FILE}")
+
+def delete_trial_info():
+    """Elimina el archivo trial_info.json si existe."""
+    try:
+        if os.path.exists(TRIAL_INFO_FILE):
+            os.remove(TRIAL_INFO_FILE)
+    except OSError as e:
+        print(f"Error al eliminar {TRIAL_INFO_FILE}: {e}")
 
 # --- Funciones de Licencia (adaptadas de license_manager.py) ---
 def get_machine_specific_identifier() -> tuple[str, str]:
@@ -69,7 +105,8 @@ def get_machine_specific_identifier() -> tuple[str, str]:
         print(f"Error obteniendo MAC/UUID: {e}. Usando UUID aleatorio como identificador interno.")
         internal_id_str = str(uuid.uuid4())
 
-    display_id = hashlib.sha1(internal_id_str.encode('utf-8')).hexdigest()[:6].upper()
+    # display_id = hashlib.sha1(internal_id_str.encode('utf-8')).hexdigest()[:6].upper() # Modificación solicitada
+    display_id = internal_id_str # Mostrar el ID completo
     
     return internal_id_str, display_id
 
@@ -101,8 +138,8 @@ def load_license_data() -> dict | None:
         return None
 
 def verify_license_key(provided_license_key: str, internal_machine_id: str) -> bool:
-    expected_license_key = generate_license_key(internal_machine_id)
-    return provided_license_key == expected_license_key
+    expected_license_key = generate_license_key(internal_machine_id) # ya es minúscula
+    return provided_license_key.lower() == expected_license_key
 
 def check_license_status() -> bool:
     """
@@ -195,7 +232,10 @@ TEXTOS = {
         "titulo_password_servicio": "Ingrese Contraseña",
         "etiqueta_password": "Contraseña:",
         "boton_entrar": "Entrar",
-        "password_incorrecta": "Contraseña incorrecta!"
+        "password_incorrecta": "Contraseña incorrecta!",
+        "menu_activar": "ACTIVAR PRODUCTO",
+        "trial_expired_message": "TIEMPO DE PRUEBA EXPIRADO",
+        "data_disabled_trial": "Deshabilitado en prueba"
     },
     "en": {
         "titulo_ventana": "Lalito",
@@ -231,7 +271,10 @@ TEXTOS = {
         "titulo_password_servicio": "Enter Password",
         "etiqueta_password": "Password:",
         "boton_entrar": "Enter",
-        "password_incorrecta": "Incorrect Password!"
+        "password_incorrecta": "Incorrect Password!",
+        "menu_activar": "ACTIVATE PRODUCT",
+        "trial_expired_message": "TRIAL PERIOD EXPIRED",
+        "data_disabled_trial": "Disabled in trial"
     }
 }
 
@@ -516,6 +559,74 @@ def convertir_coord(coord_str, direccion, is_longitude=False):
         return round(decimal, 6)
     except: 
         return 0.0 
+    
+
+
+def parse_gll(sentence):
+    global ultima_vez_datos_recibidos
+    try:
+        # Verificar que es una sentencia GLL válida
+        if not sentence.startswith('$GPGLL'):
+            return
+            
+        parts = sentence.split(',')
+        
+        # Validación más robusta (6 campos mínimos + checksum)
+        if len(parts) < 7:
+            return
+            
+        # Verificar que los datos son válidos (campo 6 == 'A')
+        if parts[6] != 'A' or not parts[1] or not parts[3]:
+            return
+            
+        lat_raw_val = parts[1]  # ¡OJO! El índice era incorrecto en tu código
+        lat_dir = parts[2]      # parts[2] es la dirección, no parts[3]
+        lon_raw_val = parts[3]  # parts[3] es longitud, no parts[4]
+        lon_dir = parts[4]      # parts[4] es dirección, no parts[5]
+        
+        global latitude_str, longitude_str, ts_lat_decimal, ts_lon_decimal
+        latitude_str_temp, longitude_str_temp = "N/A", "N/A"
+        ts_lat_decimal_temp, ts_lon_decimal_temp = 0.0, 0.0
+        
+        # Procesamiento de latitud (igual que antes)
+        if lat_raw_val and lat_dir and len(lat_raw_val) >= 2:
+            lat_deg_ui = lat_raw_val[:2]
+            lat_min_full_ui = lat_raw_val[2:]
+            try: 
+                lat_min_formatted_ui = f"{float(lat_min_full_ui):.3f}"
+            except: 
+                lat_min_formatted_ui = lat_min_full_ui 
+            latitude_str_temp = f"{lat_deg_ui}° {lat_min_formatted_ui}' {lat_dir}"
+            ts_lat_decimal_temp = convertir_coord(lat_raw_val, lat_dir, is_longitude=False)
+        
+        # Procesamiento de longitud (igual que antes)
+        if lon_raw_val and lon_dir and len(lon_raw_val) >= 3:
+            lon_parts_ui = lon_raw_val.split('.')[0]
+            deg_chars = 0
+            if len(lon_parts_ui) >= 5: 
+                deg_chars = 3 
+            elif len(lon_parts_ui) >= 4: 
+                deg_chars = 2 
+            elif len(lon_parts_ui) >= 3: 
+                deg_chars = 1 
+            if deg_chars > 0:
+                lon_deg_ui = lon_raw_val[:deg_chars]
+                lon_min_full_ui = lon_raw_val[deg_chars:]
+                try: 
+                    lon_min_formatted_ui = f"{float(lon_min_full_ui):.3f}"
+                except: 
+                    lon_min_formatted_ui = lon_min_full_ui
+                longitude_str_temp = f"{lon_deg_ui}° {lon_min_formatted_ui}' {lon_dir}"
+                ts_lon_decimal_temp = convertir_coord(lon_raw_val, lon_dir, is_longitude=True)
+        
+        latitude_str, longitude_str = latitude_str_temp, longitude_str_temp
+        ts_lat_decimal, ts_lon_decimal = ts_lat_decimal_temp, ts_lon_decimal_temp
+        ultima_vez_datos_recibidos = pygame.time.get_ticks()
+        
+    except: 
+        pass
+
+    
 
 def parse_gga(sentence):
     global ultima_vez_datos_recibidos
@@ -823,6 +934,11 @@ def guardar_csv():
 
 
 def enviar_thingspeak():
+    global PROGRAM_MODE # Necesitamos acceder al estado global
+    if PROGRAM_MODE == "TRIAL_EXPIRED":
+        print("INFO: Modo trial expirado. Envío a ThingSpeak deshabilitado.")
+        return
+
     payload = {
         'api_key': API_KEY_THINGSPEAK, 
         'field1': ts_pitch_float, 
@@ -855,14 +971,16 @@ def enviar_thingspeak():
     except Exception as e: 
         print(f"[ERROR] Conexión ThingSpeak: {e}")
 
-def draw_activation_window(screen, display_id_str, input_key_str, error_message=None):
+def draw_activation_window(screen, display_id_str, input_key_str, error_message=None, input_active: bool = False, show_cursor: bool = False):
     """Dibuja la ventana de activación de licencia."""
     font_titulo = pygame.font.Font(None, 36)
     font_texto = pygame.font.Font(None, 28)
     font_error = pygame.font.Font(None, 24)
+    font_boton_med = pygame.font.Font(None, 26) # Fuente para botones un poco más anchos
+    font_boton_pequeno = pygame.font.Font(None, 22) # Fuente para botones más pequeños si el texto es largo
 
     ventana_width = 500
-    ventana_height = 300 # Aumentada para mensaje de error
+    ventana_height = 380 # Aumentada para nueva disposición y mensaje de error
     ventana_x = (screen.get_width() - ventana_width) // 2
     ventana_y = (screen.get_height() - ventana_height) // 2
     rect_ventana = pygame.Rect(ventana_x, ventana_y, ventana_width, ventana_height)
@@ -891,56 +1009,312 @@ def draw_activation_window(screen, display_id_str, input_key_str, error_message=
     id_value_surf = font_texto.render(display_id_str, True, color_texto)
     screen.blit(id_value_surf, (rect_ventana.left + 30 + id_label_surf.get_width() + 10, rect_ventana.top + 70))
 
-    # Etiqueta para Clave de Licencia
+    # Posición del ID de máquina (para referencia)
+    id_text_y_pos = rect_ventana.top + 70
+    id_value_rect = id_value_surf.get_rect(top=id_text_y_pos) # Solo para obtener altura y bottom
+
+    # Botón "Copiar ID" - Centrado debajo del ID de máquina
+    button_copiar_id_w = 120 # Ancho ajustado
+    button_copiar_id_h = 30
+    y_copiar_id = id_text_y_pos + id_value_rect.height + 10 # 10px debajo del texto del ID
+    rect_boton_copiar_id = pygame.Rect(0, 0, button_copiar_id_w, button_copiar_id_h)
+    rect_boton_copiar_id.centerx = rect_ventana.centerx
+    rect_boton_copiar_id.top = y_copiar_id
+    
+    pygame.draw.rect(screen, color_boton_fondo, rect_boton_copiar_id)
+    pygame.draw.rect(screen, color_input_borde, rect_boton_copiar_id, 1)
+    copiar_id_text_surf = font_boton_pequeno.render("Copiar ID", True, color_boton_texto)
+    screen.blit(copiar_id_text_surf, copiar_id_text_surf.get_rect(center=rect_boton_copiar_id.center))
+
+    # Etiqueta para Clave de Licencia (debajo de Copiar ID)
+    y_label_clave = rect_boton_copiar_id.bottom + 15
     key_label_surf = font_texto.render("Clave de Licencia:", True, color_texto)
-    screen.blit(key_label_surf, (rect_ventana.left + 30, rect_ventana.top + 120))
+    screen.blit(key_label_surf, (rect_ventana.left + 30, y_label_clave))
 
     # Campo de entrada para Clave de Licencia
-    rect_input_key = pygame.Rect(rect_ventana.left + 30, rect_ventana.top + 150, ventana_width - 60, 35)
+    y_input_clave = y_label_clave + key_label_surf.get_height() + 5
+    rect_input_key = pygame.Rect(rect_ventana.left + 30, y_input_clave, ventana_width - 60, 35)
     pygame.draw.rect(screen, color_input_fondo, rect_input_key)
     pygame.draw.rect(screen, color_input_borde, rect_input_key, 1)
     input_key_surf = font_texto.render(input_key_str, True, color_texto)
     screen.blit(input_key_surf, (rect_input_key.left + 5, rect_input_key.centery - input_key_surf.get_height() // 2))
 
-    # Mensaje de error
+    # Mensaje de error/feedback (debajo del input de clave)
+    y_despues_del_mensaje = rect_input_key.bottom + 8 # Posición Y base después del input key + padding para mensaje
     if error_message:
         error_surf = font_error.render(error_message, True, color_error_texto)
-        screen.blit(error_surf, (rect_ventana.centerx - error_surf.get_width() // 2, rect_input_key.bottom + 10))
+        screen.blit(error_surf, (rect_ventana.centerx - error_surf.get_width() // 2, y_despues_del_mensaje))
+        y_inicio_area_botones = y_despues_del_mensaje + error_surf.get_height() + 15 # 15px padding después del mensaje
+    else:
+        y_inicio_area_botones = y_despues_del_mensaje + 15 # 15px padding incluso si no hay mensaje (o ajustar si se quiere más pegado)
 
-    # Botones
-    button_width = 120
+    # --- Nueva Disposición de Botones ---
     button_height = 40
-    y_botones = rect_ventana.bottom - button_height - 20
+    espacio_vertical_entre_filas = 15
+    espacio_entre_botones_horizontal = 20 # Espacio entre botones en la misma fila
     
-    rect_boton_activar = pygame.Rect(rect_ventana.left + 50, y_botones, button_width, button_height)
-    rect_boton_salir_app = pygame.Rect(rect_ventana.right - 50 - button_width, y_botones, button_width, button_height)
+    # Calcular la altura total del bloque de los 4 botones (2 filas)
+    altura_total_bloque_botones = (2 * button_height) + espacio_vertical_entre_filas
 
+    # Determinar el espacio vertical disponible para centrar los botones
+    padding_inferior_ventana = 20 # Espacio deseado en la parte inferior de la ventana
+    espacio_vertical_disponible_para_bloque = rect_ventana.bottom - y_inicio_area_botones - padding_inferior_ventana
+    
+    # Calcular la coordenada Y para la primera fila de botones para centrar el bloque
+    offset_y_bloque_botones = 0
+    if espacio_vertical_disponible_para_bloque > altura_total_bloque_botones:
+        offset_y_bloque_botones = (espacio_vertical_disponible_para_bloque - altura_total_bloque_botones) / 2
+    
+    y_botones_fila1 = y_inicio_area_botones + offset_y_bloque_botones
+    
+    # El desplazamiento vertical adicional de 10px ha sido eliminado.
+    # y_botones_fila1 += 10 # Eliminado
+
+    # Fila 1: "Usar Archivo Lic." e "Guardar ID"
+    # Anchos definidos
+    w_usar_lic = 190 # "Usar Archivo Lic."
+    w_guardar_id = 160 # "Guardar ID"
+    
+    # Cálculo para centrar los dos botones con espacio entre ellos
+    ancho_total_fila1 = w_usar_lic + espacio_entre_botones_horizontal + w_guardar_id
+    x_inicio_fila1 = rect_ventana.left + (ventana_width - ancho_total_fila1) // 2 # Corregido: relativo a rect_ventana.left
+    
+    rect_boton_usar_archivo = pygame.Rect(x_inicio_fila1, y_botones_fila1, w_usar_lic, button_height)
+    rect_boton_guardar_id = pygame.Rect(x_inicio_fila1 + w_usar_lic + espacio_entre_botones_horizontal, y_botones_fila1, w_guardar_id, button_height)
+
+    # Fila 2: "Activar" y "Salir"
+    y_botones_fila2 = y_botones_fila1 + button_height + espacio_vertical_entre_filas 
+    w_activar = 120
+    w_salir = 120
+
+    ancho_total_fila2 = w_activar + espacio_entre_botones_horizontal + w_salir
+    x_inicio_fila2 = rect_ventana.left + (ventana_width - ancho_total_fila2) // 2 # Corregido: relativo a rect_ventana.left
+
+    rect_boton_activar = pygame.Rect(x_inicio_fila2, y_botones_fila2, w_activar, button_height)
+    rect_boton_salir_app = pygame.Rect(x_inicio_fila2 + w_activar + espacio_entre_botones_horizontal, y_botones_fila2, w_salir, button_height)
+
+    # Dibujar botones y sus textos
+    # "Usar Archivo Lic."
+    pygame.draw.rect(screen, color_boton_fondo, rect_boton_usar_archivo)
+    pygame.draw.rect(screen, color_input_borde, rect_boton_usar_archivo, 1)
+    usar_archivo_text_surf = font_boton_med.render("Usar Archivo Lic.", True, color_boton_texto)
+    screen.blit(usar_archivo_text_surf, usar_archivo_text_surf.get_rect(center=rect_boton_usar_archivo.center))
+
+    # "Guardar ID"
+    pygame.draw.rect(screen, color_boton_fondo, rect_boton_guardar_id)
+    pygame.draw.rect(screen, color_input_borde, rect_boton_guardar_id, 1)
+    guardar_id_text_surf = font_boton_med.render("Guardar ID", True, color_boton_texto)
+    screen.blit(guardar_id_text_surf, guardar_id_text_surf.get_rect(center=rect_boton_guardar_id.center))
+
+    # "Activar"
     pygame.draw.rect(screen, color_boton_fondo, rect_boton_activar)
     pygame.draw.rect(screen, color_input_borde, rect_boton_activar, 1)
     activar_text_surf = font_texto.render("Activar", True, color_boton_texto)
     screen.blit(activar_text_surf, activar_text_surf.get_rect(center=rect_boton_activar.center))
 
+    # "Salir"
     pygame.draw.rect(screen, color_boton_fondo, rect_boton_salir_app)
     pygame.draw.rect(screen, color_input_borde, rect_boton_salir_app, 1)
     salir_text_surf = font_texto.render("Salir", True, color_boton_texto)
     screen.blit(salir_text_surf, salir_text_surf.get_rect(center=rect_boton_salir_app.center))
 
-    # Botón Guardar ID
-    rect_boton_guardar_id = pygame.Rect(rect_ventana.centerx - button_width // 2, y_botones - button_height - 15, button_width + 40, button_height) # Un poco más ancho
-    pygame.draw.rect(screen, color_boton_fondo, rect_boton_guardar_id)
-    pygame.draw.rect(screen, color_input_borde, rect_boton_guardar_id, 1)
-    guardar_id_text_surf = font_texto.render("Guardar ID", True, color_boton_texto)
-    screen.blit(guardar_id_text_surf, guardar_id_text_surf.get_rect(center=rect_boton_guardar_id.center))
-
-    # Botón Usar Archivo de Licencia
-    rect_boton_usar_archivo = pygame.Rect(rect_ventana.centerx - (button_width + 60) // 2, y_botones - (button_height + 15) * 2, button_width + 60, button_height) # Más ancho
-    pygame.draw.rect(screen, color_boton_fondo, rect_boton_usar_archivo)
-    pygame.draw.rect(screen, color_input_borde, rect_boton_usar_archivo, 1)
-    usar_archivo_text_surf = font_texto.render("Usar Archivo Lic.", True, color_boton_texto) # Texto más corto
-    screen.blit(usar_archivo_text_surf, usar_archivo_text_surf.get_rect(center=rect_boton_usar_archivo.center))
+    # Dibujar cursor si el input está activo y el cursor es visible
+    if input_active and show_cursor:
+        text_width = input_key_surf.get_width()
+        cursor_x = rect_input_key.left + 5 + text_width
+        # Asegurarse de que el cursor no se dibuje más allá del borde derecho del campo de entrada
+        if cursor_x > rect_input_key.right - 3: # 3px de padding derecho para el cursor
+            cursor_x = rect_input_key.right - 3
+        
+        pygame.draw.line(screen, color_texto, 
+                         (cursor_x, rect_input_key.top + 5), 
+                         (cursor_x, rect_input_key.bottom - 5), 1)
     
     pygame.display.flip()
-    return rect_input_key, rect_boton_activar, rect_boton_salir_app, rect_boton_guardar_id, rect_boton_usar_archivo
+    return rect_input_key, rect_boton_activar, rect_boton_salir_app, rect_boton_guardar_id, rect_boton_usar_archivo, rect_boton_copiar_id
+
+# --- Función para manejar la ventana de activación ---
+def run_activation_sequence(screen, current_internal_id, current_display_id):
+    """
+    Maneja la lógica y el bucle de eventos para la ventana de activación.
+    Devuelve True si la activación fue exitosa, False en caso contrario.
+    Actualiza las variables globales PROGRAM_MODE y ACTIVATED_SUCCESSFULLY.
+    """
+    global PROGRAM_MODE, ACTIVATED_SUCCESSFULLY, user_license_key_input # Necesitamos user_license_key_input si se mantiene entre llamadas
+                                                                    # o se reinicia cada vez. Por ahora, reiniciemos.
+    
+    user_license_key_input = "" # Reiniciar para cada vez que se muestra la ventana
+    activation_error_message = None
+    id_saved_message = None 
+    id_saved_message_timer = 0 
+    activation_window_active = True
+    input_key_active = False 
+
+    cursor_visible = True
+    cursor_blink_timer = 0
+    # CURSOR_BLINK_INTERVAL ya es una constante global, o debería serlo, o pasada como arg.
+    # Por ahora, asumimos que es accesible globalmente o la definimos aquí si es local a esta función.
+    # Si es global, no hay problema. Si no, necesita ser definida o pasada.
+# CURSOR_BLINK_INTERVAL = 500 # Ya está definida globalmente en main antes de llamar a esta función.
+# No es necesario redefinirla aquí ni pasarla como argumento si es una constante global del script.
+# Sin embargo, para buena práctica, las constantes usadas por una función deberían estar disponibles en su scope
+# o pasadas como argumento. CURSOR_BLINK_INTERVAL se define en main().
+# Para que esta función sea más autocontenida o si CURSOR_BLINK_INTERVAL no fuera global:
+# Descomentar la siguiente línea o añadir CURSOR_BLINK_INTERVAL como parámetro.
+# CURSOR_BLINK_INTERVAL = 500 # OJO: Si se define aquí, puede haber inconsistencia si se cambia en main.
+
+    while activation_window_active:
+        current_time_millis = pygame.time.get_ticks()
+        if id_saved_message and current_time_millis > id_saved_message_timer:
+            id_saved_message = None 
+        
+        if current_time_millis - cursor_blink_timer > CURSOR_BLINK_INTERVAL:
+            cursor_visible = not cursor_visible
+            cursor_blink_timer = current_time_millis
+        
+        current_display_message = activation_error_message if activation_error_message else id_saved_message
+
+        # Llamada a draw_activation_window
+        # Asegurarse que los parámetros coinciden con la definición de draw_activation_window
+        drawn_rects = draw_activation_window(
+            screen, 
+            current_display_id, # Renombrado para claridad, antes era display_id
+            user_license_key_input, 
+            current_display_message, 
+            input_key_active, 
+            cursor_visible
+        )
+        rect_input_key_field, rect_btn_activar, rect_btn_salir_app, \
+        rect_boton_guardar_id, rect_boton_usar_archivo, rect_boton_copiar_id = drawn_rects
+        
+        for evento_activacion in pygame.event.get():
+            if evento_activacion.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit() 
+            if evento_activacion.type == pygame.MOUSEBUTTONDOWN:
+                if evento_activacion.button == 1:
+                    if rect_btn_activar.collidepoint(evento_activacion.pos):
+                        if verify_license_key(user_license_key_input, current_internal_id): # current_internal_id
+                            store_license_data(user_license_key_input, current_internal_id) # current_internal_id
+                            ACTIVATED_SUCCESSFULLY = True
+                            PROGRAM_MODE = "LICENSED"
+                            delete_trial_info()
+                            activation_window_active = False 
+                            print("Licencia activada exitosamente.")
+                        else:
+                            activation_error_message = "Clave de licencia inválida. Intente de nuevo."
+                            user_license_key_input = "" 
+                    elif rect_btn_salir_app.collidepoint(evento_activacion.pos):
+                        activation_window_active = False 
+                        # La lógica de si se inicia trial o no al salir, se manejará fuera,
+                        # basado en el valor de retorno de esta función y el estado previo.
+                    
+                    elif rect_boton_usar_archivo.collidepoint(evento_activacion.pos):
+                        input_key_active = False; activation_error_message = None; id_saved_message = None
+                        if TKINTER_AVAILABLE:
+                            root = tk.Tk(); root.withdraw()
+                            filepath = filedialog.askopenfilename(title="Seleccione el archivo de licencia (.json)", filetypes=(("JSON files", "*.json"), ("All files", "*.*")))
+                            root.destroy()
+                            if filepath:
+                                try:
+                                    with open(filepath, 'r') as f_import: data_importada = json.load(f_import)
+                                    clave_importada = data_importada.get("license_key")
+                                    id_maquina_importado = data_importada.get("machine_identifier")
+                                    if clave_importada and id_maquina_importado:
+                                        if id_maquina_importado == current_internal_id: # current_internal_id
+                                            if verify_license_key(clave_importada, id_maquina_importado):
+                                                store_license_data(clave_importada, id_maquina_importado)
+                                                ACTIVATED_SUCCESSFULLY = True; PROGRAM_MODE = "LICENSED"; delete_trial_info()
+                                                activation_window_active = False
+                                            else: activation_error_message = "Clave en archivo de licencia es inválida."
+                                        else: activation_error_message = "Licencia no corresponde a esta máquina."
+                                    else: activation_error_message = "Archivo de licencia con formato incorrecto."
+                                except Exception as e_import: activation_error_message = f"Error al procesar archivo: {e_import}"
+                        else: activation_error_message = "Tkinter no disponible."
+                        id_saved_message_timer = current_time_millis + 3000
+                    
+                    elif rect_boton_copiar_id.collidepoint(evento_activacion.pos):
+                        input_key_active = False; activation_error_message = None
+                        if PYPERCLIP_AVAILABLE:
+                            try: pyperclip.copy(current_display_id); id_saved_message = "ID de Máquina copiado." # current_display_id
+                            except Exception: id_saved_message = "Error al copiar ID."
+                        else: id_saved_message = "Copiar ID no disponible."
+                        id_saved_message_timer = current_time_millis + 3000
+                    elif rect_boton_guardar_id.collidepoint(evento_activacion.pos):
+                        input_key_active = False; activation_error_message = None
+                        if save_id_to_file(current_display_id): id_saved_message = f"ID guardado en machine_id.txt" # current_display_id
+                        else: id_saved_message = "Error al guardar ID."
+                        id_saved_message_timer = current_time_millis + 3000
+                    elif rect_input_key_field.collidepoint(evento_activacion.pos):
+                        input_key_active = True; activation_error_message = None; id_saved_message = None
+                    else:
+                        input_key_active = False
+            
+            if evento_activacion.type == pygame.KEYDOWN and input_key_active:
+                if evento_activacion.key == pygame.K_RETURN:
+                    if verify_license_key(user_license_key_input, current_internal_id): # current_internal_id
+                        store_license_data(user_license_key_input, current_internal_id) # current_internal_id
+                        ACTIVATED_SUCCESSFULLY = True; PROGRAM_MODE = "LICENSED"; delete_trial_info()
+                        activation_window_active = False
+                    else:
+                        activation_error_message = "Clave de licencia inválida."; user_license_key_input = ""
+                elif evento_activacion.key == pygame.K_BACKSPACE: user_license_key_input = user_license_key_input[:-1]
+                elif evento_activacion.key == pygame.K_v and (pygame.key.get_mods() & pygame.KMOD_CTRL or pygame.key.get_mods() & pygame.KMOD_META):
+                    if PYPERCLIP_AVAILABLE:
+                        try:
+                                pasted_text = pyperclip.paste() # Punto y coma eliminado de aquí también para consistencia
+                                remaining_len = 32 - len(user_license_key_input)
+                                # No convertir a .upper() al pegar
+                                user_license_key_input += pasted_text[:remaining_len] # Punto y coma eliminado
+                                user_license_key_input = user_license_key_input[:32] # Asegurar longitud
+                        except Exception: pass 
+                elif evento_activacion.unicode.isalnum() and len(user_license_key_input) < 32: # Permitir solo alfanuméricos
+                    user_license_key_input += evento_activacion.unicode # No convertir a .upper()
+    
+    return ACTIVATED_SUCCESSFULLY # Devuelve el estado de activación
+
+# --- Función para formatear el tiempo restante del periodo de gracia ---
+def format_remaining_grace_time(start_time_utc: datetime | None) -> str | None:
+    """
+    Calcula y formatea el tiempo restante del periodo de gracia.
+    start_time_utc debe ser un objeto datetime aware (UTC).
+    Devuelve un string formateado "HHh MMm SSs" o None si el tiempo expiró o no es válido.
+    """
+    if start_time_utc is None:
+        return None
+
+    try:
+        # Asegurarse que start_time_utc es aware, si no lo es, asumirlo UTC (aunque debería serlo)
+        if start_time_utc.tzinfo is None or start_time_utc.tzinfo.utcoffset(start_time_utc) is None:
+            # Esto es un fallback, idealmente start_time_utc siempre es aware.
+            start_time_utc = start_time_utc.replace(tzinfo=timezone.utc)
+
+        end_time_utc = start_time_utc + timedelta(days=1)
+        now_utc = datetime.now(timezone.utc)
+        remaining_delta = end_time_utc - now_utc
+
+        if remaining_delta.total_seconds() <= 0:
+            return None # O podría ser "Expirado"
+
+        total_seconds = int(remaining_delta.total_seconds())
+        
+        days = total_seconds // (24 * 3600)
+        total_seconds %= (24 * 3600)
+        
+        hours = total_seconds // 3600
+        total_seconds %= 3600
+        
+        minutes = total_seconds // 60
+        seconds = total_seconds % 60
+
+        if days > 0:
+            return f"{days}d {hours:02}h {minutes:02}m" # No mostrar segundos si hay días
+        else:
+            return f"{hours:02}h {minutes:02}m {seconds:02}s"
+
+    except Exception as e:
+        print(f"Error al formatear tiempo restante de gracia: {e}")
+        return None
 
 
 def main():
@@ -971,168 +1345,129 @@ def main():
     screen = pygame.display.set_mode(dimensiones) # Crear la pantalla
     pygame.display.set_caption("Clinómetro") # Título genérico inicial
 
-    # --- Bucle de Activación de Licencia ---
-    if not check_license_status():
-        internal_id, display_id = get_machine_specific_identifier()
-        user_license_key_input = ""
-        activation_error_message = None
-        id_saved_message = None # Mensaje para "ID Guardado"
-        id_saved_message_timer = 0 # Temporizador para el mensaje
-        activation_window_active = True
-        input_key_active = False
-
-        while activation_window_active:
-            current_time_millis = pygame.time.get_ticks()
-            if id_saved_message and current_time_millis > id_saved_message_timer:
-                id_saved_message = None # Borrar mensaje después de un tiempo
-
-            # Pasar id_saved_message a draw_activation_window si quieres mostrarlo allí
-            # Por ahora, el mensaje de "ID Guardado" se maneja con un print y potencialmente un breve cambio de estado
-            # que podría ser dibujado si draw_activation_window lo soporta.
-            # Para simplificar, lo mantendremos como un print y un posible mensaje de error/estado en la ventana.
-            # Si se quiere un mensaje visual en la ventana, draw_activation_window necesitaría otro parámetro.
-            # Vamos a añadirlo a error_message temporalmente para la prueba visual.
-            
-            display_message_in_activation = activation_error_message if activation_error_message else id_saved_message
-
-            rect_input_key_field, rect_btn_activar, rect_btn_salir_app, rect_boton_guardar_id, rect_boton_usar_archivo = \
-                draw_activation_window(screen, display_id, user_license_key_input, display_message_in_activation)
-            
-            for evento_activacion in pygame.event.get():
-                if evento_activacion.type == pygame.QUIT:
-                    pygame.quit()
-                    sys.exit()
-                if evento_activacion.type == pygame.MOUSEBUTTONDOWN:
-                    if evento_activacion.button == 1:
-                        if rect_btn_activar.collidepoint(evento_activacion.pos):
-                            if verify_license_key(user_license_key_input, internal_id):
-                                store_license_data(user_license_key_input, internal_id)
-                                ACTIVATED_SUCCESSFULLY = True
-                                activation_window_active = False # Salir del bucle de activación
-                                print("Licencia activada exitosamente.")
-                                id_saved_message = None # Limpiar cualquier mensaje de "ID guardado"
-                            else:
-                                activation_error_message = "Clave de licencia inválida. Intente de nuevo."
-                                id_saved_message = None 
-                                user_license_key_input = "" # Limpiar input
-                                print("Intento de activación fallido.")
-                        elif rect_btn_salir_app.collidepoint(evento_activacion.pos):
-                            pygame.quit()
-                            sys.exit()
-                        elif rect_boton_usar_archivo.collidepoint(evento_activacion.pos):
-                            input_key_active = False
-                            activation_error_message = None
-                            id_saved_message = None
-                            print("DEBUG: Botón 'Usar Archivo de Licencia' presionado.")
-
-                            if TKINTER_AVAILABLE:
-                                root = tk.Tk()
-                                root.withdraw() # Ocultar la ventana principal de Tkinter
-                                filepath = filedialog.askopenfilename(
-                                    title="Seleccione el archivo de licencia (.json)",
-                                    filetypes=(("JSON files", "*.json"), ("All files", "*.*"))
-                                )
-                                root.destroy() # Destruir la instancia de Tkinter
-
-                                if filepath: # Si el usuario seleccionó un archivo
-                                    print(f"DEBUG: Archivo de licencia seleccionado: {filepath}")
-                                    try:
-                                        with open(filepath, 'r') as f_import:
-                                            data_importada = json.load(f_import)
-                                        
-                                        clave_importada = data_importada.get("license_key")
-                                        id_maquina_importado = data_importada.get("machine_identifier")
-
-                                        if clave_importada and id_maquina_importado:
-                                            if id_maquina_importado == internal_id:
-                                                if verify_license_key(clave_importada, id_maquina_importado):
-                                                    store_license_data(clave_importada, id_maquina_importado)
-                                                    ACTIVATED_SUCCESSFULLY = True
-                                                    activation_window_active = False
-                                                    print("Licencia activada exitosamente desde archivo.")
-                                                else:
-                                                    activation_error_message = "Clave en archivo de licencia es inválida."
-                                                    print("Error: Clave en archivo de licencia inválida.")
-                                            else:
-                                                activation_error_message = "Licencia no corresponde a esta máquina."
-                                                print("Error: ID de máquina en archivo de licencia no coincide.")
-                                        else:
-                                            activation_error_message = "Archivo de licencia con formato incorrecto."
-                                            print("Error: Archivo de licencia no tiene los campos esperados.")
-                                    except Exception as e_import:
-                                        activation_error_message = "Error al procesar archivo de licencia."
-                                        print(f"Error procesando archivo de licencia: {e_import}")
-                                else:
-                                    print("DEBUG: Selección de archivo cancelada por el usuario.")
-                                    # No se muestra mensaje de error si el usuario cancela
-                            else:
-                                activation_error_message = "Tkinter no disponible para abrir diálogo."
-                                print("Error: Tkinter no está disponible para la selección de archivos.")
-                            id_saved_message_timer = current_time_millis + 3000 # Reusar timer para mostrar mensaje
-
-                        elif rect_boton_guardar_id.collidepoint(evento_activacion.pos):
-                            if save_id_to_file(display_id):
-                                id_saved_message = f"ID guardado en machine_id.txt"
-                                activation_error_message = None 
-                            else:
-                                id_saved_message = "Error al guardar ID." 
-                                activation_error_message = None
-                            id_saved_message_timer = current_time_millis + 3000 
-                            input_key_active = False 
-                        elif rect_input_key_field.collidepoint(evento_activacion.pos):
-                            input_key_active = True
-                            activation_error_message = None 
-                            id_saved_message = None
-                        else:
-                            input_key_active = False
+    # --- Gestión de Licencia y Periodo de Gracia ---
+    global PROGRAM_MODE, ACTIVATED_SUCCESSFULLY, grace_period_start_time_obj # Añadir grace_period_start_time_obj a globales de main
+    
+    if check_license_status(): # check_license_status actualiza ACTIVATED_SUCCESSFULLY
+        PROGRAM_MODE = "LICENSED"
+        delete_trial_info() # Si está licenciado, no necesitamos el archivo de trial
+        print("INFO: Licencia válida encontrada. Programa en modo LICENSED.")
+    else:
+        ACTIVATED_SUCCESSFULLY = False # Asegurar que está False si check_license_status falló
+        trial_data = load_trial_info()
+        if trial_data is None:
+            # No hay licencia y no hay información de trial: Primera vez o trial_info.json borrado
+            # Mostrar ventana de activación
+            PROGRAM_MODE = "ACTIVATION_UI_VISIBLE"
+            print("INFO: No hay licencia válida ni información de trial. Mostrando ventana de activación.")
+            # (El bucle de la ventana de activación se manejará más adelante)
+        else:
+            # Hay información de trial, verificar si el periodo de gracia ha expirado
+            try:
+                start_timestamp_str = trial_data.get("grace_period_start_timestamp_utc")
+                if not start_timestamp_str:
+                    raise ValueError("Timestamp de inicio de trial no encontrado en trial_info.json")
                 
-                if evento_activacion.type == pygame.KEYDOWN and input_key_active:
-                    activation_error_message = None # Limpiar errores al empezar a teclear
-                    id_saved_message = None
-                    if evento_activacion.key == pygame.K_RETURN:
-                        if verify_license_key(user_license_key_input, internal_id):
-                            store_license_data(user_license_key_input, internal_id)
-                            ACTIVATED_SUCCESSFULLY = True
-                            activation_window_active = False
-                            print("Licencia activada exitosamente (Enter).")
-                        else:
-                            activation_error_message = "Clave de licencia inválida. Intente de nuevo."
-                            user_license_key_input = ""
-                            print("Intento de activación fallido (Enter).")
-                    elif evento_activacion.key == pygame.K_BACKSPACE:
-                        user_license_key_input = user_license_key_input[:-1]
-                    elif evento_activacion.key == pygame.K_v and (pygame.key.get_mods() & pygame.KMOD_CTRL or pygame.key.get_mods() & pygame.KMOD_META):
-                        if PYPERCLIP_AVAILABLE:
-                            try:
-                                pasted_text = pyperclip.paste()
-                                # Añadir el texto pegado, respetando la longitud máxima de 32
-                                remaining_len = 32 - len(user_license_key_input)
-                                user_license_key_input += pasted_text[:remaining_len].upper() 
-                                user_license_key_input = user_license_key_input[:32] # Asegurar que no exceda
-                            except Exception as e_paste:
-                                print(f"Error al pegar desde el portapapeles: {e_paste}")
-                        else:
-                            print("Pegar no disponible: pyperclip no está instalado.")
-                    elif evento_activacion.unicode.isalnum() and len(user_license_key_input) < 32: # Aceptar alfanuméricos
-                        user_license_key_input += evento_activacion.unicode.upper()
-            
-            if not activation_window_active and not ACTIVATED_SUCCESSFULLY:
-                 # Si el usuario cerró la ventana sin activar (ej. con la X de la ventana, si el OS lo permite y no fue manejado)
-                 # o alguna otra salida no manejada del bucle.
-                 # Por el momento, si se sale del bucle sin ACTIVATED_SUCCESSFULLY, se volverá a entrar.
-                 # Si se quiere que el programa termine aquí si no se activa, se añade sys.exit()
-                 # Para el comportamiento "en standby", simplemente se re-iterará el bucle de activación.
-                 pass
+                # Manejar el formato antiguo incorrecto si existe (ej. "...+00:00Z")
+                if start_timestamp_str.endswith("+00:00Z"):
+                    print(f"DEBUG: Detectado formato de timestamp antiguo '{start_timestamp_str}'. Corrigiendo eliminando 'Z' final.")
+                    start_timestamp_str = start_timestamp_str[:-1] 
+                
+                print(f"DEBUG: Leyendo start_timestamp_str (potencialmente corregido) de trial_info.json: {start_timestamp_str}") # DEBUG
+                start_datetime_utc = datetime.fromisoformat(start_timestamp_str) # Parseo directo
+                
+                # Asegurar que es aware y UTC (fromisoformat con offset ya lo hace aware)
+                if start_datetime_utc.tzinfo is None or start_datetime_utc.tzinfo.utcoffset(start_datetime_utc) != timedelta(0):
+                    print(f"ADVERTENCIA: El timestamp leído de trial_info.json no es UTC o no es aware: {start_datetime_utc}. Forzando a UTC.")
+                    start_datetime_utc = start_datetime_utc.astimezone(timezone.utc) if start_datetime_utc.tzinfo else start_datetime_utc.replace(tzinfo=timezone.utc)
 
 
-    if not ACTIVATED_SUCCESSFULLY:
-        print("El programa no pudo ser activado. Terminando.")
+                current_datetime_utc = datetime.now(timezone.utc) # Siempre aware UTC
+                
+                print(f"DEBUG: start_datetime_utc (procesado): {start_datetime_utc}") # DEBUG
+                print(f"DEBUG: current_datetime_utc: {current_datetime_utc}") # DEBUG
+                
+                # El bloque if hasattr...else... que causaba IndentationError ha sido eliminado.
+                # La línea current_datetime_utc = datetime.now(timezone.utc) ya está antes y es la correcta.
+
+                grace_period_duration = timedelta(days=1) # 24 horas
+
+                if current_datetime_utc < start_datetime_utc + grace_period_duration:
+                    PROGRAM_MODE = "GRACE_PERIOD"
+                    grace_period_start_time_obj = start_datetime_utc # Poblar la variable global
+                    print(f"INFO: Programa en periodo de gracia. Restante: {start_datetime_utc + grace_period_duration - current_datetime_utc}")
+                else:
+                    PROGRAM_MODE = "TRIAL_EXPIRED"
+                    print("INFO: Periodo de gracia expirado. Programa en modo TRIAL_EXPIRED.")
+            except Exception as e:
+                print(f"ERROR: Error al procesar trial_info.json: {e}. No se pudo determinar el estado del periodo de gracia.")
+                print("INFO: Se mostrará la ventana de activación. El archivo trial_info.json (si existe y causó el error) NO será eliminado para inspección.")
+                # delete_trial_info() # NO borrar el archivo para poder depurar su contenido si es necesario.
+                PROGRAM_MODE = "ACTIVATION_UI_VISIBLE" # Forzar activación.
+
+
+    # --- Bucle de Activación de Licencia (Solo si PROGRAM_MODE es "ACTIVATION_UI_VISIBLE" al inicio) ---
+    proceed_to_main_loop = False
+
+    if PROGRAM_MODE == "LICENSED":
+        ACTIVATED_SUCCESSFULLY = True 
+        proceed_to_main_loop = True
+    
+
+    elif PROGRAM_MODE == "GRACE_PERIOD": # Si estaba en gracia y no activó
+                    proceed_to_main_loop = True # Permite continuar en modo gracia
+                    ACTIVATED_SUCCESSFULLY = True   
+    elif PROGRAM_MODE == "TRIAL_EXPIRED":
+        ACTIVATED_SUCCESSFULLY = False 
+        proceed_to_main_loop = True
+    elif PROGRAM_MODE == "ACTIVATION_UI_VISIBLE":
+        # Obtener IDs solo si vamos a mostrar la ventana
+        internal_id, display_id = get_machine_specific_identifier()
+        # CURSOR_BLINK_INTERVAL ya es global, no se necesita inicializar aquí.
+        # cursor_visible y cursor_blink_timer son locales al bucle de run_activation_sequence.
+        
+        # Llamar a la función refactorizada
+        activation_success = run_activation_sequence(screen, internal_id, display_id)
+
+        if activation_success: # ACTIVATED_SUCCESSFULLY y PROGRAM_MODE ya se actualizan dentro de run_activation_sequence
+            proceed_to_main_loop = True
+        else: # Activación fallida o cerrada por el usuario
+            # Si era la primera vez (no hay trial_info), run_activation_sequence NO inicia el trial al presionar "Salir".
+            # Esa lógica debe estar aquí, después de que la ventana se cierra.
+            if load_trial_info() is None:
+                current_utc_time_for_trial = datetime.now(timezone.utc)
+                save_trial_info(current_utc_time_for_trial.isoformat()) # Guardar en formato ISO estándar (ya incluye offset UTC)
+                grace_period_start_time_obj = current_utc_time_for_trial # Poblar la variable global
+                PROGRAM_MODE = "GRACE_PERIOD"
+                ACTIVATED_SUCCESSFULLY = True # Permitir uso completo en gracia
+                print("INFO: Ventana de activación cerrada/omitida. Iniciando periodo de gracia de 24h.")
+                proceed_to_main_loop = True
+            else:
+                # Si ya había un trial_info (ej. porque el periodo de gracia ya había empezado y se accedió al menú,
+                # o el trial expiró y se accedió al menú), y el usuario cierra sin activar,
+                # el estado no cambia y proceed_to_main_loop dependerá del estado previo.
+                # Si PROGRAM_MODE era TRIAL_EXPIRED, seguirá siéndolo.
+                if PROGRAM_MODE == "TRIAL_EXPIRED": # Si estaba expirado y no activó
+                    proceed_to_main_loop = True # Permite continuar en modo trial
+                    ACTIVATED_SUCCESSFULLY = False
+                elif PROGRAM_MODE == "GRACE_PERIOD": # Si estaba en gracia y no activó
+                     proceed_to_main_loop = True # Permite continuar en modo gracia
+                     ACTIVATED_SUCCESSFULLY = True
+                else: # Otro caso inesperado
+                     proceed_to_main_loop = False
+
+
+    if not proceed_to_main_loop:
+        print("El programa no puede continuar. Verifique el estado de la licencia.")
         pygame.quit()
         sys.exit()
     
-    # --- Fin del Bucle de Activación de Licencia ---
+    # Si llegamos aquí, ACTIVATED_SUCCESSFULLY es True para LICENSED y GRACE_PERIOD
+    # o False para TRIAL_EXPIRED (pero proceed_to_main_loop es True para TRIAL_EXPIRED)
+    
+    print(f"INFO: Estado final antes del bucle principal: PROGRAM_MODE = {PROGRAM_MODE}, ACTIVATED_SUCCESSFULLY = {ACTIVATED_SUCCESSFULLY}")
 
-    # Cargar configuraciones (después de posible activación y antes de usar IDIOMA)
+    # Cargar configuraciones (después de la lógica de licencia/trial y antes de usar IDIOMA)
     puerto, baudios = cargar_configuracion_serial() # Carga IDIOMA también
     cargar_configuracion_alarma()
     
@@ -1357,14 +1692,17 @@ def main():
         # Verificar si el mouse está sobre la barra de herramientas
         toolbar_visible = rect_barra_herramientas.collidepoint(mouse_pos)
         
-        # Definir opciones del menú
-        opciones_menu_barra = [
-            TEXTOS[IDIOMA]["menu_config"],
-            TEXTOS[IDIOMA]["menu_alarma"],
-            TEXTOS[IDIOMA]["menu_idioma"], 
-            TEXTOS[IDIOMA]["menu_servicio_datos"], # Nueva opción de menú
-            TEXTOS[IDIOMA]["menu_acerca"]
-        ]
+        # Definir opciones del menú dinámicamente
+        opciones_menu_barra = []
+        opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_config"])
+        opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_alarma"])
+        opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_idioma"])
+        opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_servicio_datos"])
+        
+        if PROGRAM_MODE != "LICENSED":
+            opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_activar"])
+            
+        opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_acerca"])
         
         # Manejo de eventos
         for evento in pygame.event.get():
@@ -1377,54 +1715,56 @@ def main():
                     if toolbar_visible and not mostrar_ventana_config_serial and not mostrar_ventana_acerca_de and not mostrar_ventana_alarma and not mostrar_ventana_idioma:
                         for i, rect_opcion in enumerate(rects_opciones_menu_barra):
                             if rect_opcion.collidepoint(evento.pos):
-                                if i == 0:  # Configuración de puerto
+                                opcion_clicada_texto = opciones_menu_barra[i] # Obtener el texto de la opción
+
+                                if opcion_clicada_texto == TEXTOS[IDIOMA]["menu_config"]:
                                     mostrar_ventana_config_serial = True
                                     input_puerto_str = str(puerto)
-                                    try:
-                                        input_baudios_idx = lista_baudios_seleccionables.index(int(baudios))
-                                    except ValueError:
-                                        input_baudios_idx = 0
-                                    
-                                    # Detectar puertos disponibles
+                                    try: input_baudios_idx = lista_baudios_seleccionables.index(int(baudios))
+                                    except ValueError: input_baudios_idx = 0
                                     lista_puertos_detectados.clear()
                                     try:
                                         ports = comports()
-                                        if ports:
-                                            for p in ports:
-                                                lista_puertos_detectados.append(p.device)
-                                        else:
-                                            lista_puertos_detectados.append("N/A")
-                                    except Exception as e_com:
-                                        lista_puertos_detectados.append("Error")
+                                        if ports: lista_puertos_detectados.extend(p.device for p in ports)
+                                        else: lista_puertos_detectados.append("N/A")
+                                    except Exception: lista_puertos_detectados.append("Error")
                                     
-                                elif i == 1:  # Configuración de alarmas
+                                elif opcion_clicada_texto == TEXTOS[IDIOMA]["menu_alarma"]:
                                     mostrar_ventana_alarma = True
                                     input_alarma_activo = None
-                                    try:
-                                        valores_ui_input_alarma["pitch"] = str(abs(int(float(valores_alarma["max_pitch_pos"]))))
-                                    except:
-                                        valores_ui_input_alarma["pitch"] = "15"
-                                    try:
-                                        valores_ui_input_alarma["roll"] = str(abs(int(float(valores_alarma["max_roll_pos"]))))
-                                    except:
-                                        valores_ui_input_alarma["roll"] = "15"
+                                    try: valores_ui_input_alarma["pitch"] = str(abs(int(float(valores_alarma["max_pitch_pos"]))))
+                                    except: valores_ui_input_alarma["pitch"] = "15"
+                                    try: valores_ui_input_alarma["roll"] = str(abs(int(float(valores_alarma["max_roll_pos"]))))
+                                    except: valores_ui_input_alarma["roll"] = "15"
                                 
-                                elif i == 2:  # Idioma (ahora es el menú de servicio de datos)
-                                    # El menú de idioma real se moverá o se accederá de otra forma si es necesario
-                                    # OJO: El índice 2 ahora es para el SERVICIO DE DATOS
-                                    # El índice 2 ahora es para IDIOMA
+                                elif opcion_clicada_texto == TEXTOS[IDIOMA]["menu_idioma"]:
                                     mostrar_ventana_idioma = True
                                     rect_ventana_idioma.center = screen.get_rect().center
                                 
-                                elif i == 3: # Nueva opción: ELEGIR SERVICIO DE DATOS
-                                    mostrar_ventana_password_servicio = True # Mostrar ventana de contraseña primero
-                                    input_password_str = "" # Limpiar input de contraseña
-                                    intento_password_fallido = False # Resetear flag de error
-                                    input_servicio_activo = None # Asegurar que ningún input de API key esté activo
-                                    # No se abre directamente la ventana de servicio aquí
-
-                                elif i == 4:  # Acerca de (ahora es el índice 4)
+                                elif opcion_clicada_texto == TEXTOS[IDIOMA]["menu_servicio_datos"]:
+                                    mostrar_ventana_password_servicio = True
+                                    input_password_str = ""; intento_password_fallido = False; input_servicio_activo = None
+                                
+                                elif opcion_clicada_texto == TEXTOS[IDIOMA]["menu_activar"]:
+                                    # Esta opción solo está en opciones_menu_barra si PROGRAM_MODE != "LICENSED"
+                                    # así que no necesitamos un check explícito de PROGRAM_MODE aquí, aunque no hace daño.
+                                    if PROGRAM_MODE == "LICENSED": # Doble check, por si acaso la lógica de lista falla
+                                         print("INFO: El producto ya está activado (clic en menú).")
+                                    else:
+                                        print(f"INFO: Accediendo a activación desde menú. PROGRAM_MODE actual: {PROGRAM_MODE}")
+                                        temp_internal_id, temp_display_id = get_machine_specific_identifier()
+                                        activation_was_successful = run_activation_sequence(screen, temp_internal_id, temp_display_id)
+                                        
+                                        if activation_was_successful:
+                                            print("INFO: Activación exitosa desde el menú.")
+                                            # PROGRAM_MODE y ACTIVATED_SUCCESSFULLY se actualizan en run_activation_sequence
+                                        else:
+                                            print("INFO: Ventana de activación cerrada desde el menú sin activación exitosa.")
+                                            # El estado (GRACE_PERIOD o TRIAL_EXPIRED) no cambia.
+                                
+                                elif opcion_clicada_texto == TEXTOS[IDIOMA]["menu_acerca"]:
                                     mostrar_ventana_acerca_de = True
+                                break # Salir del bucle for de opciones de menú una vez que se maneja un clic
                     
                     # Manejo de clic en ventana de servicio de datos
                     elif mostrar_ventana_servicio_datos:
@@ -1715,7 +2055,7 @@ def main():
                 if ser.in_waiting > 0:
                     line = ser.readline().decode('ascii', errors='replace').strip()
                     if line.startswith('$GPGLL') or line.startswith('$GNGLL'):
-                        # parse_gll(line) # Assuming you have or will create this function
+                        parse_gll(line) # Assuming you have or will create this function
                         pass # Placeholder if parse_gll is not defined
                     elif line.startswith('$GPGGA') or line.startswith('$GNGGA'):
                         parse_gga(line)
@@ -1917,10 +2257,168 @@ def main():
         pygame.draw.circle(screen, BLANCO, (centro_x_circulo2, centro_y_circulos), radio_circulo_img, 2) # Círculo Roll
         
         # Dibujar indicador de pitch
-        if pitch_image_base_grande and att_pitch_str != "N/A":
-            try:
-                valor_pitch_float = float(att_pitch_str)
-                angulo_rotacion_pygame = -valor_pitch_float # Pygame rota en sentido antihorario
+        if PROGRAM_MODE != "TRIAL_EXPIRED":
+            if pitch_image_base_grande and att_pitch_str != "N/A":
+                try:
+                    valor_pitch_float = float(att_pitch_str)
+                    angulo_rotacion_pygame = -valor_pitch_float
+                    imagen_pitch_rotada_grande = pygame.transform.rotate(pitch_image_base_grande, angulo_rotacion_pygame) # Asegurar esta línea y las siguientes están indentadas un nivel más que el try
+                    diametro_claraboya = 2 * radio_circulo_img
+                    claraboya_surface = pygame.Surface((diametro_claraboya, diametro_claraboya), pygame.SRCALPHA)
+                    claraboya_surface.fill((0,0,0,0))
+                    offset_x = (diametro_claraboya - imagen_pitch_rotada_grande.get_width()) // 2
+                    offset_y = (diametro_claraboya - imagen_pitch_rotada_grande.get_height()) // 2
+                    claraboya_surface.blit(imagen_pitch_rotada_grande, (offset_x, offset_y))
+                    mask = pygame.Surface((diametro_claraboya, diametro_claraboya), pygame.SRCALPHA)
+                    mask.fill((0,0,0,0))
+                    pygame.draw.circle(mask, (255,255,255,255), (radio_circulo_img, radio_circulo_img), radio_circulo_img)
+                    claraboya_surface.blit(mask, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
+                    rect_claraboya_final = claraboya_surface.get_rect(center=(centro_x_circulo1, centro_y_circulos))
+                    screen.blit(claraboya_surface, rect_claraboya_final)
+                except ValueError:
+                    pass # Si float(att_pitch_str) falla, no se dibuja la imagen.
+            
+            pygame.draw.circle(screen, BLANCO, (centro_x_circulo1, centro_y_circulos), radio_circulo_img, 2)
+            
+            for key, (angle_deg, etiqueta_str) in ANGULOS_MARCAS_ETIQUETAS_DEF.items():
+                angle_rad = math.radians(angle_deg)
+                x_inicio_marca = centro_x_circulo1 + RADIO_INICIO_MARCAS * math.cos(angle_rad)
+                y_inicio_marca = centro_y_circulos + RADIO_INICIO_MARCAS * math.sin(angle_rad)
+                x_fin_marca = centro_x_circulo1 + RADIO_FIN_MARCAS * math.cos(angle_rad)
+                y_fin_marca = centro_y_circulos + RADIO_FIN_MARCAS * math.sin(angle_rad)
+                pygame.draw.line(screen, COLOR_MARCA_GRADO, (x_inicio_marca, y_inicio_marca), (x_fin_marca, y_fin_marca), GROSOR_MARCA_GRADO)
+                etiqueta_surf = font.render(etiqueta_str, True, COLOR_ETIQUETA_GRADO)
+                x_texto_etiqueta = centro_x_circulo1 + RADIO_POSICION_TEXTO_ETIQUETA * math.cos(angle_rad)
+                y_texto_etiqueta = centro_y_circulos + RADIO_POSICION_TEXTO_ETIQUETA * math.sin(angle_rad)
+                etiqueta_rect = etiqueta_surf.get_rect(center=(int(x_texto_etiqueta), int(y_texto_etiqueta)))
+                screen.blit(etiqueta_surf, etiqueta_rect)
+
+            if att_pitch_str != "N/A":
+                try:
+                    valor_pitch_float = float(att_pitch_str)
+                    pitch_valor_surf = font_circulos_textos.render(f"{valor_pitch_float:+.1f}°", True, BLANCO)
+                    y_pos_texto_pitch = centro_y_circulos + radio_circulo_img * 0.0282
+                    pitch_valor_rect = pitch_valor_surf.get_rect(center=(centro_x_circulo1, y_pos_texto_pitch))
+                    screen.blit(pitch_valor_surf, pitch_valor_rect)
+                    
+                    pos_flecha_pitch_x = pitch_valor_rect.left - OFFSET_FLECHA_TEXTO - (LONGITUD_FLECHA_DIR // 2)
+                    pos_flecha_pitch_y_centro = pitch_valor_rect.centery
+                    if valor_pitch_float > 0.1:
+                        pygame.draw.line(screen, BLANCO, (pos_flecha_pitch_x, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2), (pos_flecha_pitch_x, pos_flecha_pitch_y_centro - LONGITUD_FLECHA_DIR // 2), 2)
+                        pygame.draw.line(screen, BLANCO, (pos_flecha_pitch_x - ANCHO_FLECHA_DIR // 2, pos_flecha_pitch_y_centro - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2), (pos_flecha_pitch_x, pos_flecha_pitch_y_centro - LONGITUD_FLECHA_DIR // 2), 2)
+                        pygame.draw.line(screen, BLANCO, (pos_flecha_pitch_x + ANCHO_FLECHA_DIR // 2, pos_flecha_pitch_y_centro - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2), (pos_flecha_pitch_x, pos_flecha_pitch_y_centro - LONGITUD_FLECHA_DIR // 2), 2)
+                    elif valor_pitch_float < -0.1:
+                        pygame.draw.line(screen, BLANCO, (pos_flecha_pitch_x, pos_flecha_pitch_y_centro - LONGITUD_FLECHA_DIR // 2), (pos_flecha_pitch_x, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2), 2)
+                        pygame.draw.line(screen, BLANCO, (pos_flecha_pitch_x - ANCHO_FLECHA_DIR // 2, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2), (pos_flecha_pitch_x, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2), 2)
+                        pygame.draw.line(screen, BLANCO, (pos_flecha_pitch_x + ANCHO_FLECHA_DIR // 2, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2), (pos_flecha_pitch_x, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2), 2)
+                except ValueError:
+                    pass
+        else: # PROGRAM_MODE == "TRIAL_EXPIRED"
+            disabled_text_surf = font.render(TEXTOS[IDIOMA]["data_disabled_trial"], True, ROJO)
+            disabled_text_rect = disabled_text_surf.get_rect(center=(centro_x_circulo1, centro_y_circulos))
+            screen.blit(disabled_text_surf, disabled_text_rect)
+            # Dibujar marcas y etiquetas para pitch (siempre visibles)
+            for key, (angle_deg, etiqueta_str) in ANGULOS_MARCAS_ETIQUETAS_DEF.items():
+                angle_rad = math.radians(angle_deg)
+                x_inicio_marca = centro_x_circulo1 + RADIO_INICIO_MARCAS * math.cos(angle_rad)
+                y_inicio_marca = centro_y_circulos + RADIO_INICIO_MARCAS * math.sin(angle_rad)
+                x_fin_marca = centro_x_circulo1 + RADIO_FIN_MARCAS * math.cos(angle_rad)
+                y_fin_marca = centro_y_circulos + RADIO_FIN_MARCAS * math.sin(angle_rad)
+                pygame.draw.line(screen, COLOR_MARCA_GRADO, (x_inicio_marca, y_inicio_marca), (x_fin_marca, y_fin_marca), GROSOR_MARCA_GRADO)
+                etiqueta_surf = font.render(etiqueta_str, True, COLOR_ETIQUETA_GRADO)
+                x_texto_etiqueta = centro_x_circulo1 + RADIO_POSICION_TEXTO_ETIQUETA * math.cos(angle_rad)
+                y_texto_etiqueta = centro_y_circulos + RADIO_POSICION_TEXTO_ETIQUETA * math.sin(angle_rad)
+                etiqueta_rect = etiqueta_surf.get_rect(center=(int(x_texto_etiqueta), int(y_texto_etiqueta)))
+                screen.blit(etiqueta_surf, etiqueta_rect)
+
+        # Dibujar indicador de roll
+        if PROGRAM_MODE != "TRIAL_EXPIRED":
+            if roll_image_base_grande and att_roll_str != "N/A":
+                try:
+                    valor_roll_float = float(att_roll_str)
+                    angulo_rotacion_pygame_roll = -valor_roll_float
+                    # Correctamente indentado dentro del try:
+                    imagen_roll_rotada_grande = pygame.transform.rotate(roll_image_base_grande, angulo_rotacion_pygame_roll)
+                    diametro_claraboya_roll = 2 * radio_circulo_img
+                    claraboya_surface_roll = pygame.Surface((diametro_claraboya_roll, diametro_claraboya_roll), pygame.SRCALPHA)
+                    claraboya_surface_roll.fill((0,0,0,0))
+                    offset_x_roll = (diametro_claraboya_roll - imagen_roll_rotada_grande.get_width()) // 2
+                    offset_y_roll = (diametro_claraboya_roll - imagen_roll_rotada_grande.get_height()) // 2
+                    claraboya_surface_roll.blit(imagen_roll_rotada_grande, (offset_x_roll, offset_y_roll))
+                    mask_roll = pygame.Surface((diametro_claraboya_roll, diametro_claraboya_roll), pygame.SRCALPHA)
+                    mask_roll.fill((0,0,0,0))
+                    pygame.draw.circle(mask_roll, (255,255,255,255), (radio_circulo_img, radio_circulo_img), radio_circulo_img)
+                    claraboya_surface_roll.blit(mask_roll, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
+                    rect_claraboya_final_roll = claraboya_surface_roll.get_rect(center=(centro_x_circulo2, centro_y_circulos))
+                    screen.blit(claraboya_surface_roll, rect_claraboya_final_roll)
+                except ValueError:
+                    pass # Si float(att_roll_str) falla, no se dibuja la imagen.
+            
+        pygame.draw.circle(screen, BLANCO, (centro_x_circulo2, centro_y_circulos), radio_circulo_img, 2)
+            
+    for key, (angle_deg, etiqueta_str) in ANGULOS_MARCAS_ETIQUETAS_DEF.items():
+                angle_rad = math.radians(angle_deg)
+                x_inicio_marca_roll = centro_x_circulo2 + RADIO_INICIO_MARCAS * math.cos(angle_rad)
+                y_inicio_marca_roll = centro_y_circulos + RADIO_INICIO_MARCAS * math.sin(angle_rad)
+                x_fin_marca_roll = centro_x_circulo2 + RADIO_FIN_MARCAS * math.cos(angle_rad)
+                y_fin_marca_roll = centro_y_circulos + RADIO_FIN_MARCAS * math.sin(angle_rad)
+                pygame.draw.line(screen, COLOR_MARCA_GRADO, (x_inicio_marca_roll, y_inicio_marca_roll), (x_fin_marca_roll, y_fin_marca_roll), GROSOR_MARCA_GRADO)
+                etiqueta_surf_roll = font.render(etiqueta_str, True, COLOR_ETIQUETA_GRADO)
+                x_texto_etiqueta_roll = centro_x_circulo2 + RADIO_POSICION_TEXTO_ETIQUETA * math.cos(angle_rad)
+                y_texto_etiqueta_roll = centro_y_circulos + RADIO_POSICION_TEXTO_ETIQUETA * math.sin(angle_rad)
+                etiqueta_rect_roll = etiqueta_surf_roll.get_rect(center=(int(x_texto_etiqueta_roll), int(y_texto_etiqueta_roll)))
+                screen.blit(etiqueta_surf_roll, etiqueta_rect_roll)
+    if att_roll_str != "N/A":
+        try:
+            valor_roll_float = float(att_roll_str)
+            roll_valor_surf = font_circulos_textos.render(f"{valor_roll_float:+.1f}°", True, BLANCO)
+            y_pos_texto_roll = centro_y_circulos + radio_circulo_img * 0.0282
+            roll_valor_rect = roll_valor_surf.get_rect(center=(centro_x_circulo2, y_pos_texto_roll))
+            screen.blit(roll_valor_surf, roll_valor_rect)
+                    
+            letra_roll_str = ""
+            if valor_roll_float > 0.1: letra_roll_str = "S"
+            elif valor_roll_float < -0.1: letra_roll_str = "P"
+            if letra_roll_str:
+                        letra_roll_surf = font_circulos_textos.render(letra_roll_str, True, COLOR_LETRA_ROLL)
+                        letra_roll_rect = letra_roll_surf.get_rect(midtop=(roll_valor_rect.centerx, roll_valor_rect.bottom + OFFSET_LETRA_ROLL_Y))
+                        screen.blit(letra_roll_surf, letra_roll_rect)
+
+            pos_flecha_roll_y_centro = roll_valor_rect.centery
+            if valor_roll_float > 0.1:
+                        pos_flecha_roll_x = roll_valor_rect.right + OFFSET_FLECHA_TEXTO + (LONGITUD_FLECHA_DIR // 2)
+                        pygame.draw.line(screen, VERDE, (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+                        pygame.draw.line(screen, VERDE, (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro - ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+                        pygame.draw.line(screen, VERDE, (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro + ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+            elif valor_roll_float < -0.1:
+                        pos_flecha_roll_x = roll_valor_rect.left - OFFSET_FLECHA_TEXTO - (LONGITUD_FLECHA_DIR // 2)
+                        pygame.draw.line(screen, ROJO, (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+                        pygame.draw.line(screen, ROJO, (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro - ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+                        pygame.draw.line(screen, ROJO, (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro + ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+        except ValueError:
+                pass
+    else: # PROGRAM_MODE == "TRIAL_EXPIRED"
+        try:
+            disabled_text_surf = font.render(TEXTOS[IDIOMA]["data_disabled_trial"], True, ROJO)
+            disabled_text_rect = disabled_text_surf.get_rect(center=(centro_x_circulo2, centro_y_circulos))
+            screen.blit(disabled_text_surf, disabled_text_rect)
+
+            for key, (angle_deg, etiqueta_str) in ANGULOS_MARCAS_ETIQUETAS_DEF.items():
+                angle_rad = math.radians(angle_deg)
+                x_inicio_marca_roll = centro_x_circulo2 + RADIO_INICIO_MARCAS * math.cos(angle_rad)
+                y_inicio_marca_roll = centro_y_circulos + RADIO_INICIO_MARCAS * math.sin(angle_rad)
+                x_fin_marca_roll = centro_x_circulo2 + RADIO_FIN_MARCAS * math.cos(angle_rad)
+                y_fin_marca_roll = centro_y_circulos + RADIO_FIN_MARCAS * math.sin(angle_rad)
+                pygame.draw.line(screen, COLOR_MARCA_GRADO, (x_inicio_marca_roll, y_inicio_marca_roll), (x_fin_marca_roll, y_fin_marca_roll), GROSOR_MARCA_GRADO)
+                etiqueta_surf_roll = font.render(etiqueta_str, True, COLOR_ETIQUETA_GRADO)
+                x_texto_etiqueta_roll = centro_x_circulo2 + RADIO_POSICION_TEXTO_ETIQUETA * math.cos(angle_rad)
+                y_texto_etiqueta_roll = centro_y_circulos + RADIO_POSICION_TEXTO_ETIQUETA * math.sin(angle_rad)
+                etiqueta_rect_roll = etiqueta_surf_roll.get_rect(center=(int(x_texto_etiqueta_roll), int(y_texto_etiqueta_roll)))
+                screen.blit(etiqueta_surf_roll, etiqueta_rect_roll)
+
+        # Dibujar cajas de datos
+                espacio_entre_cajas_vertical = 10
+                ancho_cajas_datos = 280 # Ancho fijo para las 3 cajas
                 imagen_pitch_rotada_grande = pygame.transform.rotate(pitch_image_base_grande, angulo_rotacion_pygame)
                 
                 # Crear "claraboya" (máscara circular)
@@ -1943,14 +2441,14 @@ def main():
                 
                 # Dibujar la claraboya final en la pantalla
                 rect_claraboya_final = claraboya_surface.get_rect(center=(centro_x_circulo1, centro_y_circulos))
-                screen.blit(claraboya_surface, rect_claraboya_final)
-            except ValueError:
-                pass # Si att_pitch_str no es un float válido
+                screen.blit(claraboya_surface, rect_claraboya_final)    
+        except ValueError:
+                    pass # Si att_pitch_str no es un float válido
         
-        pygame.draw.circle(screen, BLANCO, (centro_x_circulo1, centro_y_circulos), radio_circulo_img, 2) # Redibujar borde por si la imagen lo tapa
+    pygame.draw.circle(screen, BLANCO, (centro_x_circulo1, centro_y_circulos), radio_circulo_img, 2) # Redibujar borde por si la imagen lo tapa
         
         # Dibujar marcas y etiquetas para pitch
-        for key, (angle_deg, etiqueta_str) in ANGULOS_MARCAS_ETIQUETAS_DEF.items():
+    for key, (angle_deg, etiqueta_str) in ANGULOS_MARCAS_ETIQUETAS_DEF.items():
             angle_rad = math.radians(angle_deg) # Convertir a radianes
             # Calcular puntos de inicio y fin de la marca
             x_inicio_marca = centro_x_circulo1 + RADIO_INICIO_MARCAS * math.cos(angle_rad)
@@ -1969,8 +2467,8 @@ def main():
             screen.blit(etiqueta_surf, etiqueta_rect)
         
         # Mostrar valor de pitch
-        if att_pitch_str != "N/A":
-            try:
+    if att_pitch_str != "N/A":
+        try:
                 valor_pitch_float = float(att_pitch_str)
                 pitch_valor_surf = font_circulos_textos.render(f"{valor_pitch_float:+.1f}°", True, BLANCO)
                 # Ajustar la posición Y del texto del valor de pitch para que esté más centrado
@@ -2002,7 +2500,7 @@ def main():
                     pygame.draw.line(screen, BLANCO, 
                                    (pos_flecha_pitch_x + ANCHO_FLECHA_DIR // 2, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2),
                                    (pos_flecha_pitch_x, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2), 2) # Punta derecha
-            except ValueError:
+        except ValueError:
                 pass
         
         # Dibujar indicador de roll
@@ -2742,6 +3240,61 @@ def main():
             guardar_servicio_surf = font.render(TEXTOS[IDIOMA]["boton_guardar"], True, COLOR_TEXTO_NORMAL)
             screen.blit(guardar_servicio_surf, guardar_servicio_surf.get_rect(center=rect_boton_guardar_servicio.center))
 
+        # Mostrar tiempo restante del periodo de gracia
+        if PROGRAM_MODE == "GRACE_PERIOD" and grace_period_start_time_obj is not None:
+            remaining_time_str = format_remaining_grace_time(grace_period_start_time_obj)
+            if remaining_time_str:
+                # Usar una fuente un poco más pequeña para este mensaje
+                font_trial_info = pygame.font.Font(None, 20) # Misma que font_bar_herramientas o similar
+                trial_text_color = (255, 223, 0) # Un color dorado/amarillo
+                
+                if IDIOMA == "es":
+                    grace_message = f"periodo de prueba restante: {remaining_time_str}"
+                else: # IDIOMA == "en"
+                    grace_message = f"remaining trial period: {remaining_time_str}"
+
+                tiempo_surf = font_trial_info.render(grace_message, True, trial_text_color)
+                tiempo_rect = tiempo_surf.get_rect(centerx=screen.get_width() // 2, bottom=screen.get_height() - 5) # 5px padding desde abajo
+                
+                # Pequeño fondo oscuro semi-transparente para legibilidad
+                fondo_rect = tiempo_rect.inflate(10, 4) # Un poco más grande que el texto
+                fondo_surf = pygame.Surface(fondo_rect.size, pygame.SRCALPHA)
+                fondo_surf.fill((0, 0, 0, 120)) # Negro semi-transparente
+                screen.blit(fondo_surf, fondo_rect.topleft)
+                
+                screen.blit(tiempo_surf, tiempo_rect)
+
+        # Mostrar mensaje de TRIAL EXPIRADO
+        if PROGRAM_MODE == "TRIAL_EXPIRED":
+            font_trial_expired = pygame.font.Font(None, 74) # Fuente grande
+            expired_text_color = ROJO 
+            
+            expired_message = TEXTOS[IDIOMA]["trial_expired_message"]
+            expired_surf = font_trial_expired.render(expired_message, True, expired_text_color)
+            
+            # Crear una superficie para la marca de agua con transparencia alfa
+            # Esto permite que el texto sea semi-transparente si se desea,
+            # o simplemente para controlar su renderizado sobre otros elementos.
+            alpha_surface = pygame.Surface(expired_surf.get_size(), pygame.SRCALPHA)
+            alpha_surface.fill((0,0,0,0)) # Fondo transparente para la superficie del texto
+            
+            # Dibujar el texto en la superficie alfa con la opacidad deseada
+            # Para texto sólido pero que se dibuja encima:
+            # expired_surf.set_alpha(200) # Opcional: hacer el texto mismo semi-transparente
+            # alpha_surface.blit(expired_surf, (0,0))
+            # O dibujar directamente el texto sólido:
+            
+            expired_rect = expired_surf.get_rect(center=(screen.get_width() // 2, screen.get_height() // 2))
+            
+            # Opcional: Fondo semi-transparente para el texto para destacarlo
+            bg_rect = expired_rect.inflate(20, 10)
+            bg_surf = pygame.Surface(bg_rect.size, pygame.SRCALPHA)
+            bg_surf.fill((50, 50, 50, 180)) # Gris oscuro semi-transparente
+            screen.blit(bg_surf, bg_rect.topleft)
+            
+            screen.blit(expired_surf, expired_rect)
+
+
         pygame.display.flip()
         reloj.tick(60) # Limitar a 60 FPS
     
@@ -2754,4 +3307,5 @@ def main():
 # Punto de entrada del programa
 if __name__ == "__main__":
     main()
+
 
