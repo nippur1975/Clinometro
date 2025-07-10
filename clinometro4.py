@@ -8,7 +8,7 @@ from serial.tools.list_ports import comports
 from pygame.locals import *
 import requests
 import csv
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import time
 import sys # Necesario para sys._MEIPASS
 
@@ -44,9 +44,42 @@ except ImportError:
     print("Advertencia: Biblioteca 'tkinter' no encontrada. La selección de archivo de licencia no estará disponible.")
 
 # --- Constantes para la Licencia ---
-LICENSE_FILE = resource_path("license.json") 
+LICENSE_FILE = resource_path("license.json")
+TRIAL_INFO_FILE = resource_path("trial_info.json") # Nuevo archivo para info del periodo de gracia
 SECRET_KEY = "my_super_secret_clinometer_key" # ¡¡ESTA CLAVE DEBE SER IDÉNTICA A LA USADA EN EL GENERADOR DE LICENCIAS!!
 ACTIVATED_SUCCESSFULLY = False # Variable global para controlar el estado de activación en la sesión actual
+PROGRAM_MODE = "LOADING" # Posibles valores: "LOADING", "LICENSED", "GRACE_PERIOD", "TRIAL_EXPIRED", "ACTIVATION_UI_VISIBLE"
+CURSOR_BLINK_INTERVAL = 500 # milisegundos, para el cursor en el campo de activación
+
+
+# --- Funciones de Gestión de Trial ---
+def load_trial_info() -> dict | None:
+    """Carga la información del periodo de gracia desde trial_info.json."""
+    if not os.path.exists(TRIAL_INFO_FILE):
+        return None
+    try:
+        with open(TRIAL_INFO_FILE, 'r') as f:
+            data = json.load(f)
+            return data
+    except (IOError, json.JSONDecodeError):
+        return None
+
+def save_trial_info(timestamp_utc_str: str):
+    """Guarda el timestamp de inicio del periodo de gracia."""
+    data = {"grace_period_start_timestamp_utc": timestamp_utc_str}
+    try:
+        with open(TRIAL_INFO_FILE, 'w') as f:
+            json.dump(data, f, indent=4)
+    except IOError:
+        print(f"Error al guardar la información de trial en {TRIAL_INFO_FILE}")
+
+def delete_trial_info():
+    """Elimina el archivo trial_info.json si existe."""
+    try:
+        if os.path.exists(TRIAL_INFO_FILE):
+            os.remove(TRIAL_INFO_FILE)
+    except OSError as e:
+        print(f"Error al eliminar {TRIAL_INFO_FILE}: {e}")
 
 # --- Funciones de Licencia (adaptadas de license_manager.py) ---
 def get_machine_specific_identifier() -> tuple[str, str]:
@@ -198,7 +231,8 @@ TEXTOS = {
         "titulo_password_servicio": "Ingrese Contraseña",
         "etiqueta_password": "Contraseña:",
         "boton_entrar": "Entrar",
-        "password_incorrecta": "Contraseña incorrecta!"
+        "password_incorrecta": "Contraseña incorrecta!",
+        "menu_activar": "ACTIVAR PRODUCTO"
     },
     "en": {
         "titulo_ventana": "Lalito",
@@ -234,7 +268,8 @@ TEXTOS = {
         "titulo_password_servicio": "Enter Password",
         "etiqueta_password": "Password:",
         "boton_entrar": "Enter",
-        "password_incorrecta": "Incorrect Password!"
+        "password_incorrecta": "Incorrect Password!",
+        "menu_activar": "ACTIVATE PRODUCT"
     }
 }
 
@@ -1088,6 +1123,143 @@ def draw_activation_window(screen, display_id_str, input_key_str, error_message=
     pygame.display.flip()
     return rect_input_key, rect_boton_activar, rect_boton_salir_app, rect_boton_guardar_id, rect_boton_usar_archivo, rect_boton_copiar_id
 
+# --- Función para manejar la ventana de activación ---
+def run_activation_sequence(screen, current_internal_id, current_display_id):
+    """
+    Maneja la lógica y el bucle de eventos para la ventana de activación.
+    Devuelve True si la activación fue exitosa, False en caso contrario.
+    Actualiza las variables globales PROGRAM_MODE y ACTIVATED_SUCCESSFULLY.
+    """
+    global PROGRAM_MODE, ACTIVATED_SUCCESSFULLY, user_license_key_input # Necesitamos user_license_key_input si se mantiene entre llamadas
+                                                                    # o se reinicia cada vez. Por ahora, reiniciemos.
+    
+    user_license_key_input = "" # Reiniciar para cada vez que se muestra la ventana
+    activation_error_message = None
+    id_saved_message = None 
+    id_saved_message_timer = 0 
+    activation_window_active = True
+    input_key_active = False 
+
+    cursor_visible = True
+    cursor_blink_timer = 0
+    # CURSOR_BLINK_INTERVAL ya es una constante global, o debería serlo, o pasada como arg.
+    # Por ahora, asumimos que es accesible globalmente o la definimos aquí si es local a esta función.
+    # Si es global, no hay problema. Si no, necesita ser definida o pasada.
+# CURSOR_BLINK_INTERVAL = 500 # Ya está definida globalmente en main antes de llamar a esta función.
+# No es necesario redefinirla aquí ni pasarla como argumento si es una constante global del script.
+# Sin embargo, para buena práctica, las constantes usadas por una función deberían estar disponibles en su scope
+# o pasadas como argumento. CURSOR_BLINK_INTERVAL se define en main().
+# Para que esta función sea más autocontenida o si CURSOR_BLINK_INTERVAL no fuera global:
+# Descomentar la siguiente línea o añadir CURSOR_BLINK_INTERVAL como parámetro.
+# CURSOR_BLINK_INTERVAL = 500 # OJO: Si se define aquí, puede haber inconsistencia si se cambia en main.
+
+    while activation_window_active:
+        current_time_millis = pygame.time.get_ticks()
+        if id_saved_message and current_time_millis > id_saved_message_timer:
+            id_saved_message = None 
+        
+        if current_time_millis - cursor_blink_timer > CURSOR_BLINK_INTERVAL:
+            cursor_visible = not cursor_visible
+            cursor_blink_timer = current_time_millis
+        
+        current_display_message = activation_error_message if activation_error_message else id_saved_message
+
+        # Llamada a draw_activation_window
+        # Asegurarse que los parámetros coinciden con la definición de draw_activation_window
+        drawn_rects = draw_activation_window(
+            screen, 
+            current_display_id, # Renombrado para claridad, antes era display_id
+            user_license_key_input, 
+            current_display_message, 
+            input_key_active, 
+            cursor_visible
+        )
+        rect_input_key_field, rect_btn_activar, rect_btn_salir_app, \
+        rect_boton_guardar_id, rect_boton_usar_archivo, rect_boton_copiar_id = drawn_rects
+        
+        for evento_activacion in pygame.event.get():
+            if evento_activacion.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit() 
+            if evento_activacion.type == pygame.MOUSEBUTTONDOWN:
+                if evento_activacion.button == 1:
+                    if rect_btn_activar.collidepoint(evento_activacion.pos):
+                        if verify_license_key(user_license_key_input, current_internal_id): # current_internal_id
+                            store_license_data(user_license_key_input, current_internal_id) # current_internal_id
+                            ACTIVATED_SUCCESSFULLY = True
+                            PROGRAM_MODE = "LICENSED"
+                            delete_trial_info()
+                            activation_window_active = False 
+                            print("Licencia activada exitosamente.")
+                        else:
+                            activation_error_message = "Clave de licencia inválida. Intente de nuevo."
+                            user_license_key_input = "" 
+                    elif rect_btn_salir_app.collidepoint(evento_activacion.pos):
+                        activation_window_active = False 
+                        # La lógica de si se inicia trial o no al salir, se manejará fuera,
+                        # basado en el valor de retorno de esta función y el estado previo.
+                    
+                    elif rect_boton_usar_archivo.collidepoint(evento_activacion.pos):
+                        input_key_active = False; activation_error_message = None; id_saved_message = None
+                        if TKINTER_AVAILABLE:
+                            root = tk.Tk(); root.withdraw()
+                            filepath = filedialog.askopenfilename(title="Seleccione el archivo de licencia (.json)", filetypes=(("JSON files", "*.json"), ("All files", "*.*")))
+                            root.destroy()
+                            if filepath:
+                                try:
+                                    with open(filepath, 'r') as f_import: data_importada = json.load(f_import)
+                                    clave_importada = data_importada.get("license_key")
+                                    id_maquina_importado = data_importada.get("machine_identifier")
+                                    if clave_importada and id_maquina_importado:
+                                        if id_maquina_importado == current_internal_id: # current_internal_id
+                                            if verify_license_key(clave_importada, id_maquina_importado):
+                                                store_license_data(clave_importada, id_maquina_importado)
+                                                ACTIVATED_SUCCESSFULLY = True; PROGRAM_MODE = "LICENSED"; delete_trial_info()
+                                                activation_window_active = False
+                                            else: activation_error_message = "Clave en archivo de licencia es inválida."
+                                        else: activation_error_message = "Licencia no corresponde a esta máquina."
+                                    else: activation_error_message = "Archivo de licencia con formato incorrecto."
+                                except Exception as e_import: activation_error_message = f"Error al procesar archivo: {e_import}"
+                        else: activation_error_message = "Tkinter no disponible."
+                        id_saved_message_timer = current_time_millis + 3000
+                    
+                    elif rect_boton_copiar_id.collidepoint(evento_activacion.pos):
+                        input_key_active = False; activation_error_message = None
+                        if PYPERCLIP_AVAILABLE:
+                            try: pyperclip.copy(current_display_id); id_saved_message = "ID de Máquina copiado." # current_display_id
+                            except Exception: id_saved_message = "Error al copiar ID."
+                        else: id_saved_message = "Copiar ID no disponible."
+                        id_saved_message_timer = current_time_millis + 3000
+                    elif rect_boton_guardar_id.collidepoint(evento_activacion.pos):
+                        input_key_active = False; activation_error_message = None
+                        if save_id_to_file(current_display_id): id_saved_message = f"ID guardado en machine_id.txt" # current_display_id
+                        else: id_saved_message = "Error al guardar ID."
+                        id_saved_message_timer = current_time_millis + 3000
+                    elif rect_input_key_field.collidepoint(evento_activacion.pos):
+                        input_key_active = True; activation_error_message = None; id_saved_message = None
+                    else:
+                        input_key_active = False
+            
+            if evento_activacion.type == pygame.KEYDOWN and input_key_active:
+                if evento_activacion.key == pygame.K_RETURN:
+                    if verify_license_key(user_license_key_input, current_internal_id): # current_internal_id
+                        store_license_data(user_license_key_input, current_internal_id) # current_internal_id
+                        ACTIVATED_SUCCESSFULLY = True; PROGRAM_MODE = "LICENSED"; delete_trial_info()
+                        activation_window_active = False
+                    else:
+                        activation_error_message = "Clave de licencia inválida."; user_license_key_input = ""
+                elif evento_activacion.key == pygame.K_BACKSPACE: user_license_key_input = user_license_key_input[:-1]
+                elif evento_activacion.key == pygame.K_v and (pygame.key.get_mods() & pygame.KMOD_CTRL or pygame.key.get_mods() & pygame.KMOD_META):
+                    if PYPERCLIP_AVAILABLE:
+                        try:
+                            pasted_text = pyperclip.paste(); remaining_len = 32 - len(user_license_key_input)
+                            user_license_key_input += pasted_text[:remaining_len].upper(); user_license_key_input = user_license_key_input[:32]
+                        except Exception: pass 
+                elif evento_activacion.unicode.isalnum() and len(user_license_key_input) < 32:
+                    user_license_key_input += evento_activacion.unicode.upper()
+    
+    return ACTIVATED_SUCCESSFULLY # Devuelve el estado de activación
+
 
 def main():
     global IDIOMA, sonido_alarma_actualmente_reproduciendo, tiempo_ultimo_sonido_iniciado
@@ -1117,196 +1289,130 @@ def main():
     screen = pygame.display.set_mode(dimensiones) # Crear la pantalla
     pygame.display.set_caption("Clinómetro") # Título genérico inicial
 
-    # --- Bucle de Activación de Licencia ---
-    if not check_license_status():
+    # --- Gestión de Licencia y Periodo de Gracia ---
+    global PROGRAM_MODE, ACTIVATED_SUCCESSFULLY # Asegurarse que PROGRAM_MODE es global
+    
+    if check_license_status(): # check_license_status actualiza ACTIVATED_SUCCESSFULLY
+        PROGRAM_MODE = "LICENSED"
+        delete_trial_info() # Si está licenciado, no necesitamos el archivo de trial
+        print("INFO: Licencia válida encontrada. Programa en modo LICENSED.")
+    else:
+        ACTIVATED_SUCCESSFULLY = False # Asegurar que está False si check_license_status falló
+        trial_data = load_trial_info()
+        if trial_data is None:
+            # No hay licencia y no hay información de trial: Primera vez o trial_info.json borrado
+            # Mostrar ventana de activación
+            PROGRAM_MODE = "ACTIVATION_UI_VISIBLE"
+            print("INFO: No hay licencia válida ni información de trial. Mostrando ventana de activación.")
+            # (El bucle de la ventana de activación se manejará más adelante)
+        else:
+            # Hay información de trial, verificar si el periodo de gracia ha expirado
+            try:
+                start_timestamp_str = trial_data.get("grace_period_start_timestamp_utc")
+                if not start_timestamp_str:
+                    raise ValueError("Timestamp de inicio de trial no encontrado en trial_info.json")
+
+                # Convertir string a datetime object (asumiendo formato ISO)
+                # Necesitamos importar datetime si no está ya globalmente (está en el script)
+                start_datetime_utc = datetime.fromisoformat(start_timestamp_str.replace("Z", "+00:00"))
+                current_datetime_utc = datetime.utcnow().replace(tzinfo=timezone.utc if "timezone" in sys.modules else None) # Python <3.9 compat
+                if sys.version_info < (3,9): # datetime.timezone.utc
+                     # Para Python < 3.9, datetime.utcnow() es naive, necesitamos hacerlo aware
+                     # Si start_datetime_utc es aware (por +00:00), current_datetime_utc también debe serlo.
+                     # Esto es un poco complicado sin importar 'pytz' o similar para manejo robusto de zonas horarias.
+                     # Asumiremos que si fromisoformat funciona con +00:00, es aware.
+                     # Para simplificar, si la resta funciona, es que son comparables.
+                     # Python 3.7+ soporta fromisoformat.
+                     # El timestamp guardado debería ser timezone-aware (ej. con Z o +00:00)
+                     # datetime.utcnow() es naive. Para comparar, ambos deben ser naive o ambos aware.
+                     # Si guardamos con Z, fromisoformat lo hace aware.
+                     # Hacemos current_datetime_utc aware:
+                    if hasattr(datetime, 'timezone') and hasattr(datetime.timezone, 'utc'): # Python 3.2+
+                        current_datetime_utc = datetime.now(datetime.timezone.utc)
+                    else: # Fallback muy simple, puede no ser preciso si hay cambios de DST, pero UTC no tiene DST.
+                        current_datetime_utc = datetime.utcnow() # Mantenemos naive y cruzamos los dedos si start_datetime_utc también es naive
+                        # Si start_datetime_utc fue guardado con datetime.utcnow().isoformat() será naive.
+                        # Para ser robustos, el formato guardado es crucial.
+                        # El timestamp se guarda con datetime.utcnow().isoformat() + "Z"
+                        # fromisoformat con "Z" lo interpreta como UTC.
+                        # Así que start_datetime_utc es aware. Necesitamos current_datetime_utc aware.
+                        # La forma más segura es:
+                        current_datetime_utc = datetime.now(timezone.utc) # Asegura que sea aware
+
+
+                grace_period_duration = timedelta(days=1) # 24 horas
+
+                if current_datetime_utc < start_datetime_utc + grace_period_duration:
+                    PROGRAM_MODE = "GRACE_PERIOD"
+                    print(f"INFO: Programa en periodo de gracia. Restante: {start_datetime_utc + grace_period_duration - current_datetime_utc}")
+                else:
+                    PROGRAM_MODE = "TRIAL_EXPIRED"
+                    print("INFO: Periodo de gracia expirado. Programa en modo TRIAL_EXPIRED.")
+            except Exception as e:
+                print(f"ERROR: Error al procesar trial_info.json: {e}. Considerándolo como trial expirado o mostrando activación.")
+                # Podríamos optar por borrar el trial_info.json corrupto y forzar activación
+                delete_trial_info()
+                PROGRAM_MODE = "ACTIVATION_UI_VISIBLE" # Forzar activación si hay error con trial_info
+
+
+    # --- Bucle de Activación de Licencia (Solo si PROGRAM_MODE es "ACTIVATION_UI_VISIBLE" al inicio) ---
+    proceed_to_main_loop = False
+
+    if PROGRAM_MODE == "LICENSED":
+        ACTIVATED_SUCCESSFULLY = True 
+        proceed_to_main_loop = True
+    elif PROGRAM_MODE == "GRACE_PERIOD":
+        ACTIVATED_SUCCESSFULLY = True 
+        proceed_to_main_loop = True
+    elif PROGRAM_MODE == "TRIAL_EXPIRED":
+        ACTIVATED_SUCCESSFULLY = False 
+        proceed_to_main_loop = True
+    elif PROGRAM_MODE == "ACTIVATION_UI_VISIBLE":
+        # Obtener IDs solo si vamos a mostrar la ventana
         internal_id, display_id = get_machine_specific_identifier()
-        user_license_key_input = ""
-        activation_error_message = None
-        id_saved_message = None # Mensaje para "ID Guardado"
-        id_saved_message_timer = 0 # Temporizador para el mensaje
-        activation_window_active = True
-        input_key_active = False # True cuando el campo de clave de licencia está activo
+        # CURSOR_BLINK_INTERVAL ya es global, no se necesita inicializar aquí.
+        # cursor_visible y cursor_blink_timer son locales al bucle de run_activation_sequence.
+        
+        # Llamar a la función refactorizada
+        activation_success = run_activation_sequence(screen, internal_id, display_id)
 
-        # Variables para el cursor del campo de texto
-        cursor_visible = True
-        cursor_blink_timer = 0
-        CURSOR_BLINK_INTERVAL = 500 # milisegundos
-
-        while activation_window_active:
-            current_time_millis = pygame.time.get_ticks()
-            if id_saved_message and current_time_millis > id_saved_message_timer:
-                id_saved_message = None # Borrar mensaje después de un tiempo
-            
-            # Lógica de parpadeo del cursor
-            if current_time_millis - cursor_blink_timer > CURSOR_BLINK_INTERVAL:
-                cursor_visible = not cursor_visible
-                cursor_blink_timer = current_time_millis
-
-            # Pasar id_saved_message a draw_activation_window si quieres mostrarlo allí
-            # Por ahora, el mensaje de "ID Guardado" se maneja con un print y potencialmente un breve cambio de estado
-            # que podría ser dibujado si draw_activation_window lo soporta.
-            # Para simplificar, lo mantendremos como un print y un posible mensaje de error/estado en la ventana.
-            # Si se quiere un mensaje visual en la ventana, draw_activation_window necesitaría otro parámetro.
-            # Vamos a añadirlo a error_message temporalmente para la prueba visual.
-            
-            # Priorizar mensaje de error sobre mensaje de ID guardado/copiado
-            current_display_message = activation_error_message if activation_error_message else id_saved_message
-
-            rect_input_key_field, rect_btn_activar, rect_btn_salir_app, rect_boton_guardar_id, rect_boton_usar_archivo, rect_boton_copiar_id = \
-                draw_activation_window(screen, display_id, user_license_key_input, current_display_message, input_key_active, cursor_visible)
-            
-            for evento_activacion in pygame.event.get():
-                if evento_activacion.type == pygame.QUIT:
-                    pygame.quit()
-                    sys.exit()
-                if evento_activacion.type == pygame.MOUSEBUTTONDOWN:
-                    if evento_activacion.button == 1:
-                        if rect_btn_activar.collidepoint(evento_activacion.pos):
-                            if verify_license_key(user_license_key_input, internal_id):
-                                store_license_data(user_license_key_input, internal_id)
-                                ACTIVATED_SUCCESSFULLY = True
-                                activation_window_active = False # Salir del bucle de activación
-                                print("Licencia activada exitosamente.")
-                                id_saved_message = None # Limpiar cualquier mensaje de "ID guardado"
-                            else:
-                                activation_error_message = "Clave de licencia inválida. Intente de nuevo."
-                                id_saved_message = None 
-                                user_license_key_input = "" # Limpiar input
-                                print("Intento de activación fallido.")
-                        elif rect_btn_salir_app.collidepoint(evento_activacion.pos):
-                            pygame.quit()
-                            sys.exit()
-                        elif rect_boton_usar_archivo.collidepoint(evento_activacion.pos):
-                            input_key_active = False
-                            activation_error_message = None
-                            id_saved_message = None
-                            print("DEBUG: Botón 'Usar Archivo de Licencia' presionado.")
-
-                            if TKINTER_AVAILABLE:
-                                root = tk.Tk()
-                                root.withdraw() # Ocultar la ventana principal de Tkinter
-                                filepath = filedialog.askopenfilename(
-                                    title="Seleccione el archivo de licencia (.json)",
-                                    filetypes=(("JSON files", "*.json"), ("All files", "*.*"))
-                                )
-                                root.destroy() # Destruir la instancia de Tkinter
-
-                                if filepath: # Si el usuario seleccionó un archivo
-                                    print(f"DEBUG: Archivo de licencia seleccionado: {filepath}")
-                                    try:
-                                        with open(filepath, 'r') as f_import:
-                                            data_importada = json.load(f_import)
-                                        
-                                        clave_importada = data_importada.get("license_key")
-                                        id_maquina_importado = data_importada.get("machine_identifier")
-
-                                        if clave_importada and id_maquina_importado:
-                                            if id_maquina_importado == internal_id:
-                                                if verify_license_key(clave_importada, id_maquina_importado):
-                                                    store_license_data(clave_importada, id_maquina_importado)
-                                                    ACTIVATED_SUCCESSFULLY = True
-                                                    activation_window_active = False
-                                                    print("Licencia activada exitosamente desde archivo.")
-                                                else:
-                                                    activation_error_message = "Clave en archivo de licencia es inválida."
-                                                    print("Error: Clave en archivo de licencia inválida.")
-                                            else:
-                                                activation_error_message = "Licencia no corresponde a esta máquina."
-                                                print("Error: ID de máquina en archivo de licencia no coincide.")
-                                        else:
-                                            activation_error_message = "Archivo de licencia con formato incorrecto."
-                                            print("Error: Archivo de licencia no tiene los campos esperados.")
-                                    except Exception as e_import:
-                                        activation_error_message = "Error al procesar archivo de licencia."
-                                        print(f"Error procesando archivo de licencia: {e_import}")
-                                else:
-                                    print("DEBUG: Selección de archivo cancelada por el usuario.")
-                                    # No se muestra mensaje de error si el usuario cancela
-                            else:
-                                activation_error_message = "Tkinter no disponible para abrir diálogo."
-                                print("Error: Tkinter no está disponible para la selección de archivos.")
-                            id_saved_message_timer = current_time_millis + 3000 # Reusar timer para mostrar mensaje
-                        
-                        elif rect_boton_copiar_id.collidepoint(evento_activacion.pos):
-                            input_key_active = False # Desactivar input de clave al hacer clic en otros botones
-                            activation_error_message = None
-                            if PYPERCLIP_AVAILABLE:
-                                try:
-                                    pyperclip.copy(display_id)
-                                    id_saved_message = "ID de Máquina copiado."
-                                    print("ID de Máquina copiado al portapapeles.")
-                                except Exception as e_copy_id:
-                                    id_saved_message = "Error al copiar ID."
-                                    print(f"Error al copiar ID de máquina: {e_copy_id}")
-                            else:
-                                id_saved_message = "Copiar ID no disponible."
-                                print("Advertencia: Pyperclip no está disponible para copiar el ID.")
-                            id_saved_message_timer = current_time_millis + 3000
-
-                        elif rect_boton_guardar_id.collidepoint(evento_activacion.pos):
-                            input_key_active = False # Desactivar input de clave
-                            if save_id_to_file(display_id):
-                                id_saved_message = f"ID guardado en machine_id.txt"
-                                activation_error_message = None 
-                            else:
-                                id_saved_message = "Error al guardar ID." 
-                                activation_error_message = None
-                            id_saved_message_timer = current_time_millis + 3000 
-                             
-                        elif rect_input_key_field.collidepoint(evento_activacion.pos):
-                            input_key_active = True
-                            activation_error_message = None 
-                            id_saved_message = None
-                        else:
-                            input_key_active = False
-                
-                if evento_activacion.type == pygame.KEYDOWN and input_key_active:
-                    activation_error_message = None # Limpiar errores al empezar a teclear
-                    id_saved_message = None
-                    if evento_activacion.key == pygame.K_RETURN:
-                        if verify_license_key(user_license_key_input, internal_id):
-                            store_license_data(user_license_key_input, internal_id)
-                            ACTIVATED_SUCCESSFULLY = True
-                            activation_window_active = False
-                            print("Licencia activada exitosamente (Enter).")
-                        else:
-                            activation_error_message = "Clave de licencia inválida. Intente de nuevo."
-                            user_license_key_input = ""
-                            print("Intento de activación fallido (Enter).")
-                    elif evento_activacion.key == pygame.K_BACKSPACE:
-                        user_license_key_input = user_license_key_input[:-1]
-                    elif evento_activacion.key == pygame.K_v and (pygame.key.get_mods() & pygame.KMOD_CTRL or pygame.key.get_mods() & pygame.KMOD_META):
-                        if PYPERCLIP_AVAILABLE:
-                            try:
-                                pasted_text = pyperclip.paste()
-                                # Añadir el texto pegado, respetando la longitud máxima de 32
-                                remaining_len = 32 - len(user_license_key_input)
-                                user_license_key_input += pasted_text[:remaining_len].upper() 
-                                user_license_key_input = user_license_key_input[:32] # Asegurar que no exceda
-                            except Exception as e_paste:
-                                print(f"Error al pegar desde el portapapeles: {e_paste}")
-                        else:
-                            print("Pegar no disponible: pyperclip no está instalado.")
-                    elif evento_activacion.unicode.isalnum() and len(user_license_key_input) < 32: # Aceptar alfanuméricos
-                        user_license_key_input += evento_activacion.unicode.upper()
-            
-            if not activation_window_active and not ACTIVATED_SUCCESSFULLY:
-                 # Si el usuario cerró la ventana sin activar (ej. con la X de la ventana, si el OS lo permite y no fue manejado)
-                 # o alguna otra salida no manejada del bucle.
-                 # Por el momento, si se sale del bucle sin ACTIVATED_SUCCESSFULLY, se volverá a entrar.
-                 # Si se quiere que el programa termine aquí si no se activa, se añade sys.exit()
-                 # Para el comportamiento "en standby", simplemente se re-iterará el bucle de activación.
-                 pass
+        if activation_success: # ACTIVATED_SUCCESSFULLY y PROGRAM_MODE ya se actualizan dentro de run_activation_sequence
+            proceed_to_main_loop = True
+        else: # Activación fallida o cerrada por el usuario
+            # Si era la primera vez (no hay trial_info), run_activation_sequence NO inicia el trial al presionar "Salir".
+            # Esa lógica debe estar aquí, después de que la ventana se cierra.
+            if load_trial_info() is None:
+                save_trial_info(datetime.utcnow().replace(tzinfo=timezone.utc).isoformat() + "Z")
+                PROGRAM_MODE = "GRACE_PERIOD"
+                ACTIVATED_SUCCESSFULLY = True # Permitir uso completo en gracia
+                print("INFO: Ventana de activación cerrada/omitida. Iniciando periodo de gracia de 24h.")
+                proceed_to_main_loop = True
+            else:
+                # Si ya había un trial_info (ej. porque el periodo de gracia ya había empezado y se accedió al menú,
+                # o el trial expiró y se accedió al menú), y el usuario cierra sin activar,
+                # el estado no cambia y proceed_to_main_loop dependerá del estado previo.
+                # Si PROGRAM_MODE era TRIAL_EXPIRED, seguirá siéndolo.
+                if PROGRAM_MODE == "TRIAL_EXPIRED": # Si estaba expirado y no activó
+                    proceed_to_main_loop = True # Permite continuar en modo trial
+                    ACTIVATED_SUCCESSFULLY = False
+                elif PROGRAM_MODE == "GRACE_PERIOD": # Si estaba en gracia y no activó
+                     proceed_to_main_loop = True # Permite continuar en modo gracia
+                     ACTIVATED_SUCCESSFULLY = True
+                else: # Otro caso inesperado
+                     proceed_to_main_loop = False
 
 
-    if not ACTIVATED_SUCCESSFULLY:
-        print("El programa no pudo ser activado. Terminando.")
+    if not proceed_to_main_loop:
+        print("El programa no puede continuar. Verifique el estado de la licencia.")
         pygame.quit()
         sys.exit()
     
-    # --- Fin del Bucle de Activación de Licencia ---
+    # Si llegamos aquí, ACTIVATED_SUCCESSFULLY es True para LICENSED y GRACE_PERIOD
+    # o False para TRIAL_EXPIRED (pero proceed_to_main_loop es True para TRIAL_EXPIRED)
+    
+    print(f"INFO: Estado final antes del bucle principal: PROGRAM_MODE = {PROGRAM_MODE}, ACTIVATED_SUCCESSFULLY = {ACTIVATED_SUCCESSFULLY}")
 
-    # Cargar configuraciones (después de posible activación y antes de usar IDIOMA)
+    # Cargar configuraciones (después de la lógica de licencia/trial y antes de usar IDIOMA)
     puerto, baudios = cargar_configuracion_serial() # Carga IDIOMA también
     cargar_configuracion_alarma()
     
@@ -1531,14 +1637,17 @@ def main():
         # Verificar si el mouse está sobre la barra de herramientas
         toolbar_visible = rect_barra_herramientas.collidepoint(mouse_pos)
         
-        # Definir opciones del menú
-        opciones_menu_barra = [
-            TEXTOS[IDIOMA]["menu_config"],
-            TEXTOS[IDIOMA]["menu_alarma"],
-            TEXTOS[IDIOMA]["menu_idioma"], 
-            TEXTOS[IDIOMA]["menu_servicio_datos"], # Nueva opción de menú
-            TEXTOS[IDIOMA]["menu_acerca"]
-        ]
+        # Definir opciones del menú dinámicamente
+        opciones_menu_barra = []
+        opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_config"])
+        opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_alarma"])
+        opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_idioma"])
+        opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_servicio_datos"])
+        
+        if PROGRAM_MODE != "LICENSED":
+            opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_activar"])
+            
+        opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_acerca"])
         
         # Manejo de eventos
         for evento in pygame.event.get():
@@ -1551,54 +1660,56 @@ def main():
                     if toolbar_visible and not mostrar_ventana_config_serial and not mostrar_ventana_acerca_de and not mostrar_ventana_alarma and not mostrar_ventana_idioma:
                         for i, rect_opcion in enumerate(rects_opciones_menu_barra):
                             if rect_opcion.collidepoint(evento.pos):
-                                if i == 0:  # Configuración de puerto
+                                opcion_clicada_texto = opciones_menu_barra[i] # Obtener el texto de la opción
+
+                                if opcion_clicada_texto == TEXTOS[IDIOMA]["menu_config"]:
                                     mostrar_ventana_config_serial = True
                                     input_puerto_str = str(puerto)
-                                    try:
-                                        input_baudios_idx = lista_baudios_seleccionables.index(int(baudios))
-                                    except ValueError:
-                                        input_baudios_idx = 0
-                                    
-                                    # Detectar puertos disponibles
+                                    try: input_baudios_idx = lista_baudios_seleccionables.index(int(baudios))
+                                    except ValueError: input_baudios_idx = 0
                                     lista_puertos_detectados.clear()
                                     try:
                                         ports = comports()
-                                        if ports:
-                                            for p in ports:
-                                                lista_puertos_detectados.append(p.device)
-                                        else:
-                                            lista_puertos_detectados.append("N/A")
-                                    except Exception as e_com:
-                                        lista_puertos_detectados.append("Error")
+                                        if ports: lista_puertos_detectados.extend(p.device for p in ports)
+                                        else: lista_puertos_detectados.append("N/A")
+                                    except Exception: lista_puertos_detectados.append("Error")
                                     
-                                elif i == 1:  # Configuración de alarmas
+                                elif opcion_clicada_texto == TEXTOS[IDIOMA]["menu_alarma"]:
                                     mostrar_ventana_alarma = True
                                     input_alarma_activo = None
-                                    try:
-                                        valores_ui_input_alarma["pitch"] = str(abs(int(float(valores_alarma["max_pitch_pos"]))))
-                                    except:
-                                        valores_ui_input_alarma["pitch"] = "15"
-                                    try:
-                                        valores_ui_input_alarma["roll"] = str(abs(int(float(valores_alarma["max_roll_pos"]))))
-                                    except:
-                                        valores_ui_input_alarma["roll"] = "15"
+                                    try: valores_ui_input_alarma["pitch"] = str(abs(int(float(valores_alarma["max_pitch_pos"]))))
+                                    except: valores_ui_input_alarma["pitch"] = "15"
+                                    try: valores_ui_input_alarma["roll"] = str(abs(int(float(valores_alarma["max_roll_pos"]))))
+                                    except: valores_ui_input_alarma["roll"] = "15"
                                 
-                                elif i == 2:  # Idioma (ahora es el menú de servicio de datos)
-                                    # El menú de idioma real se moverá o se accederá de otra forma si es necesario
-                                    # OJO: El índice 2 ahora es para el SERVICIO DE DATOS
-                                    # El índice 2 ahora es para IDIOMA
+                                elif opcion_clicada_texto == TEXTOS[IDIOMA]["menu_idioma"]:
                                     mostrar_ventana_idioma = True
                                     rect_ventana_idioma.center = screen.get_rect().center
                                 
-                                elif i == 3: # Nueva opción: ELEGIR SERVICIO DE DATOS
-                                    mostrar_ventana_password_servicio = True # Mostrar ventana de contraseña primero
-                                    input_password_str = "" # Limpiar input de contraseña
-                                    intento_password_fallido = False # Resetear flag de error
-                                    input_servicio_activo = None # Asegurar que ningún input de API key esté activo
-                                    # No se abre directamente la ventana de servicio aquí
-
-                                elif i == 4:  # Acerca de (ahora es el índice 4)
+                                elif opcion_clicada_texto == TEXTOS[IDIOMA]["menu_servicio_datos"]:
+                                    mostrar_ventana_password_servicio = True
+                                    input_password_str = ""; intento_password_fallido = False; input_servicio_activo = None
+                                
+                                elif opcion_clicada_texto == TEXTOS[IDIOMA]["menu_activar"]:
+                                    # Esta opción solo está en opciones_menu_barra si PROGRAM_MODE != "LICENSED"
+                                    # así que no necesitamos un check explícito de PROGRAM_MODE aquí, aunque no hace daño.
+                                    if PROGRAM_MODE == "LICENSED": # Doble check, por si acaso la lógica de lista falla
+                                         print("INFO: El producto ya está activado (clic en menú).")
+                                    else:
+                                        print(f"INFO: Accediendo a activación desde menú. PROGRAM_MODE actual: {PROGRAM_MODE}")
+                                        temp_internal_id, temp_display_id = get_machine_specific_identifier()
+                                        activation_was_successful = run_activation_sequence(screen, temp_internal_id, temp_display_id)
+                                        
+                                        if activation_was_successful:
+                                            print("INFO: Activación exitosa desde el menú.")
+                                            # PROGRAM_MODE y ACTIVATED_SUCCESSFULLY se actualizan en run_activation_sequence
+                                        else:
+                                            print("INFO: Ventana de activación cerrada desde el menú sin activación exitosa.")
+                                            # El estado (GRACE_PERIOD o TRIAL_EXPIRED) no cambia.
+                                
+                                elif opcion_clicada_texto == TEXTOS[IDIOMA]["menu_acerca"]:
                                     mostrar_ventana_acerca_de = True
+                                break # Salir del bucle for de opciones de menú una vez que se maneja un clic
                     
                     # Manejo de clic en ventana de servicio de datos
                     elif mostrar_ventana_servicio_datos:
