@@ -244,7 +244,8 @@ TEXTOS = {
         "password_incorrecta": "Contraseña incorrecta!",
         "menu_activar": "ACTIVAR PRODUCTO",
         "trial_expired_message": "TIEMPO DE PRUEBA EXPIRADO",
-        "data_disabled_trial": "Deshabilitado en prueba"
+        "data_disabled_trial": "Deshabilitado en prueba",
+        "boton_mostrar_consola": "Mostrar Consola"
     },
     "en": {
         "titulo_ventana": "Lalito",
@@ -283,7 +284,8 @@ TEXTOS = {
         "password_incorrecta": "Incorrect Password!",
         "menu_activar": "ACTIVATE PRODUCT",
         "trial_expired_message": "TRIAL PERIOD EXPIRED",
-        "data_disabled_trial": "Disabled in trial"
+        "data_disabled_trial": "Disabled in trial",
+        "boton_mostrar_consola": "Show Console"
     }
 }
 
@@ -901,6 +903,13 @@ def init_csv():
     except Exception as e:
         print(f"[ERROR] En init_csv para {CSV_FILENAME}: {e}")
 
+# --- Función para añadir mensajes a la consola de datos ---
+def agregar_a_consola(mensaje: str):
+    """Añade un mensaje al buffer de la consola, manteniendo un tamaño máximo."""
+    global datos_consola_buffer, MAX_LINEAS_CONSOLA
+    if len(datos_consola_buffer) >= MAX_LINEAS_CONSOLA:
+        datos_consola_buffer.pop(0) # Eliminar el mensaje más antiguo
+    datos_consola_buffer.append(f"[{time.strftime('%H:%M:%S')}] {mensaje}")
 
 
 def init_alarm_csv():
@@ -993,11 +1002,17 @@ def enviar_thingspeak():
     try:
         r = requests.get(THINGSPEAK_URL, params=payload) 
         if r.status_code == 200: 
-            print(f"[OK] Datos enviados a ThingSpeak: {ts_timestamp_str}")
+            msg_ts = f"ThingSpeak OK: {ts_timestamp_str}"
+            print(f"[OK] {msg_ts}")
+            agregar_a_consola(msg_ts)
         else: 
-            print(f"[ERROR] Respuesta ThingSpeak: {r.status_code} - {r.text}")
+            msg_ts_err = f"ThingSpeak ERR: {r.status_code} - {r.text}"
+            print(f"[ERROR] {msg_ts_err}")
+            agregar_a_consola(msg_ts_err)
     except Exception as e: 
-        print(f"[ERROR] Conexión ThingSpeak: {e}")
+        msg_ts_conn_err = f"ThingSpeak Conn. ERR: {e}"
+        print(f"[ERROR] {msg_ts_conn_err}")
+        agregar_a_consola(msg_ts_conn_err)
 
 def draw_activation_window(screen, display_id_str, input_key_str, error_message=None, input_active: bool = False, show_cursor: bool = False):
     """Dibuja la ventana de activación de licencia."""
@@ -1353,6 +1368,7 @@ def main():
     global ultimo_intento_reconeccion_tiempo # Declaración global añadida
     global latitude_str, longitude_str, speed_str, heading_str, att_heading_str, att_pitch_str, att_roll_str
     global ts_pitch_float, ts_roll_float, ts_lat_decimal, ts_lon_decimal, ts_speed_float, ts_heading_float, ts_timestamp_str
+    global datos_consola_buffer, MAX_LINEAS_CONSOLA # Para la consola de datos
     global alarma_roll_babor_activa, alarma_roll_estribor_activa, alarma_pitch_sentado_activa, alarma_pitch_encabuzado_activa
     global ser, serial_port_available, ultima_vez_datos_recibidos, nmea_data_stale
     # Globales para la configuración del servicio de datos
@@ -1360,12 +1376,13 @@ def main():
     global input_api_key_thingspeak_str, input_api_key_google_cloud_str
     # Globales para el estado de las ventanas modales y sus inputs
     global mostrar_ventana_config_serial, mostrar_ventana_alarma, mostrar_ventana_idioma, mostrar_ventana_acerca_de
-    global mostrar_ventana_servicio_datos, mostrar_ventana_password_servicio
+    global mostrar_ventana_servicio_datos, mostrar_ventana_password_servicio, mostrar_ventana_consola_datos
     global input_puerto_str, input_baudios_idx, puerto_dropdown_activo, baudios_dropdown_activo # Para config puerto
     global input_alarma_activo # Para config alarma
     global input_password_str, intento_password_fallido, input_password_activo # Para password servicio
     global input_servicio_activo # Para config servicio datos
     global ACTIVATED_SUCCESSFULLY
+    global datos_consola_buffer # Para acceder al buffer de la consola
     
     # Inicializar Pygame Temprano para Ventana de Activación (si es necesario)
     pygame.init() # Asegurar que Pygame esté inicializado
@@ -1686,7 +1703,7 @@ def main():
     # Variables para la ventana de servicio de datos
     mostrar_ventana_servicio_datos = False
     ventana_servicio_width = 400
-    ventana_servicio_height = 280 # Ajustable según contenido
+    ventana_servicio_height = 330 # Ajustada para el nuevo botón
     ventana_servicio_x = (dimensiones[0] - ventana_servicio_width) // 2
     ventana_servicio_y = (dimensiones[1] - ventana_servicio_height) // 2
     rect_ventana_servicio_datos = pygame.Rect(ventana_servicio_x, ventana_servicio_y, ventana_servicio_width, ventana_servicio_height)
@@ -1696,6 +1713,7 @@ def main():
     rect_input_apikey_thingspeak = None
     rect_input_apikey_google_cloud = None
     rect_boton_guardar_servicio = None
+    rect_boton_mostrar_consola_servicio = None # Nuevo botón
     rect_boton_cerrar_servicio = None
     RADIO_BUTTON_SIZE = 10 # Radio del círculo del radio button
 
@@ -1709,6 +1727,13 @@ def main():
     rect_boton_entrar_password = None
     rect_boton_cerrar_password_servicio = None # Para el botón 'X' de esta ventana
     input_password_activo = False # Para saber si el campo de contraseña está activo
+
+    # Variables para la ventana de consola de datos
+    mostrar_ventana_consola_datos = False # Controla la visibilidad
+    rect_ventana_consola_datos = None # Se definirá en el bucle si es visible
+    rect_boton_cerrar_consola_datos = None # Botón 'X' para cerrar
+    datos_consola_buffer = [] # Buffer para almacenar mensajes de la consola
+    MAX_LINEAS_CONSOLA = 100 # Número máximo de líneas a mantener en el buffer
     
     # Bucle principal
     hecho = False
@@ -1814,10 +1839,19 @@ def main():
                             guardar_configuracion_serial(puerto, baudios) # Guarda todas las configs incluido el servicio y keys
                             mostrar_ventana_servicio_datos = False
                             input_servicio_activo = None
+                        elif globals().get('rect_boton_mostrar_consola_servicio') and globals().get('rect_boton_mostrar_consola_servicio').collidepoint(evento.pos):
+                            print("Botón 'Mostrar Consola' presionado.")
+                            mostrar_ventana_consola_datos = True # Mostrar la ventana de la consola
+                            mostrar_ventana_servicio_datos = False # Ocultar la ventana de servicio de datos
+                            input_servicio_activo = None # Asegurarse de resetear el input activo de la ventana de servicio
                         else:
                             input_servicio_activo = None # Clic fuera de elementos interactivos
 
                     # Manejo de clic en ventana de idioma
+                    elif mostrar_ventana_consola_datos: # Si la ventana de consola está visible
+                        if globals().get('rect_boton_cerrar_consola_datos') and globals().get('rect_boton_cerrar_consola_datos').collidepoint(evento.pos):
+                            mostrar_ventana_consola_datos = False # Ocultar la ventana
+                        # Aquí se podrían manejar otros clics dentro de la consola si fuera necesario (e.g., scrollbar)
                     elif mostrar_ventana_idioma:
                         if rect_boton_es and rect_boton_es.collidepoint(evento.pos):
                             IDIOMA = "es"
@@ -2047,9 +2081,22 @@ def main():
                 elif mostrar_ventana_acerca_de:
                     if evento.key == pygame.K_ESCAPE:
                         mostrar_ventana_acerca_de = False
+                elif mostrar_ventana_consola_datos: # Si la consola está visible
+                    if evento.key == pygame.K_ESCAPE:
+                        mostrar_ventana_consola_datos = False
         
         # Reconexión automática si el puerto no está disponible
-        if not serial_port_available and not mostrar_ventana_config_serial and not mostrar_ventana_alarma and not mostrar_ventana_acerca_de and not mostrar_ventana_idioma:
+        # Asegurarse que la ventana de consola no bloquee la reconexión si está abierta
+        condiciones_para_no_reconectar = (
+            mostrar_ventana_config_serial or
+            mostrar_ventana_alarma or
+            mostrar_ventana_acerca_de or
+            mostrar_ventana_idioma or
+            mostrar_ventana_password_servicio or # Añadido para ser consistente
+            mostrar_ventana_servicio_datos or # Añadido para ser consistente
+            mostrar_ventana_consola_datos # No intentar reconectar si la consola está abierta
+        )
+        if not serial_port_available and not condiciones_para_no_reconectar:
             ahora = pygame.time.get_ticks()
             if ahora - ultimo_intento_reconeccion_tiempo > INTERVALO_RECONECCION_MS:
                 ultimo_intento_reconeccion_tiempo = ahora
@@ -2129,12 +2176,17 @@ def main():
                 
                 print(f"--- Guardando y Enviando Datos ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---")
                 print(f"Valores: P:{ts_pitch_float}, R:{ts_roll_float}, Lat:{ts_lat_decimal}, Lon:{ts_lon_decimal}, Spd:{ts_speed_float}, Hdg:{ts_heading_float}, TS:{ts_timestamp_str}, Alarma: {estado_alarma_para_print}")
+                agregar_a_consola(f"Datos: P:{ts_pitch_float:.1f}, R:{ts_roll_float:.1f}, Lat:{ts_lat_decimal:.4f}, Lon:{ts_lon_decimal:.4f}, Spd:{ts_speed_float:.1f}, Hdg:{ts_heading_float:.0f}, Alarma: {estado_alarma_para_print}")
                 
                 guardar_csv()
+                agregar_a_consola(f"Guardado en CSV: {CSV_FILENAME}")
+
                 if SERVICIO_DATOS_ACTUAL == "thingspeak":
-                    enviar_thingspeak()
+                    enviar_thingspeak() # Esta función ya agrega a la consola
                 elif SERVICIO_DATOS_ACTUAL == "google_cloud":
-                    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Google Cloud envío no implementado. API Key: {API_KEY_GOOGLE_CLOUD}")
+                    msg_gc = f"Google Cloud no implementado. API Key: {API_KEY_GOOGLE_CLOUD}"
+                    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg_gc}")
+                    agregar_a_consola(msg_gc)
                 # else: # Otros servicios futuros
                     # pass
                 print("---------------------------------------------------\n")
@@ -2152,17 +2204,25 @@ def main():
                 # Alarma Roll Babor
                 condicion_babor = ts_roll_float < umbral_min_roll_float if att_roll_str != "N/A" else False
                 if condicion_babor and not alarma_roll_babor_activa:
+                    msg_alarma = f"ALARMA ROLL BABOR ACTIVADA. Valor: {ts_roll_float:.1f}°, Umbral: {umbral_min_roll_float:.1f}°"
                     guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_BABOR", "ACTIVANDO", ts_roll_float, umbral_min_roll_float)
+                    agregar_a_consola(msg_alarma)
                 elif not condicion_babor and alarma_roll_babor_activa:
+                    msg_alarma = f"ALARMA ROLL BABOR DESACTIVADA. Valor: {ts_roll_float:.1f}°"
                     guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_BABOR", "DESACTIVANDO", ts_roll_float, umbral_min_roll_float)
+                    agregar_a_consola(msg_alarma)
                 alarma_roll_babor_activa = condicion_babor
 
                 # Alarma Roll Estribor
                 condicion_estribor = ts_roll_float > umbral_max_roll_float if att_roll_str != "N/A" else False
                 if condicion_estribor and not alarma_roll_estribor_activa:
+                    msg_alarma = f"ALARMA ROLL ESTRIBOR ACTIVADA. Valor: {ts_roll_float:.1f}°, Umbral: {umbral_max_roll_float:.1f}°"
                     guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_ESTRIBOR", "ACTIVANDO", ts_roll_float, umbral_max_roll_float)
+                    agregar_a_consola(msg_alarma)
                 elif not condicion_estribor and alarma_roll_estribor_activa:
+                    msg_alarma = f"ALARMA ROLL ESTRIBOR DESACTIVADA. Valor: {ts_roll_float:.1f}°"
                     guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_ESTRIBOR", "DESACTIVANDO", ts_roll_float, umbral_max_roll_float)
+                    agregar_a_consola(msg_alarma)
                 alarma_roll_estribor_activa = condicion_estribor
 
                 # Pitch
@@ -2172,17 +2232,25 @@ def main():
                 # Alarma Pitch Encabuzado
                 condicion_encabuzado = ts_pitch_float < umbral_min_pitch_float if att_pitch_str != "N/A" else False
                 if condicion_encabuzado and not alarma_pitch_encabuzado_activa:
+                    msg_alarma = f"ALARMA PITCH ENCABUZADO ACTIVADA. Valor: {ts_pitch_float:.1f}°, Umbral: {umbral_min_pitch_float:.1f}°"
                     guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_ENCABUZADO", "ACTIVANDO", ts_pitch_float, umbral_min_pitch_float)
+                    agregar_a_consola(msg_alarma)
                 elif not condicion_encabuzado and alarma_pitch_encabuzado_activa:
+                    msg_alarma = f"ALARMA PITCH ENCABUZADO DESACTIVADA. Valor: {ts_pitch_float:.1f}°"
                     guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_ENCABUZADO", "DESACTIVANDO", ts_pitch_float, umbral_min_pitch_float)
+                    agregar_a_consola(msg_alarma)
                 alarma_pitch_encabuzado_activa = condicion_encabuzado
                 
                 # Alarma Pitch Sentado
                 condicion_sentado = ts_pitch_float > umbral_max_pitch_float if att_pitch_str != "N/A" else False
                 if condicion_sentado and not alarma_pitch_sentado_activa:
+                    msg_alarma = f"ALARMA PITCH SENTADO ACTIVADA. Valor: {ts_pitch_float:.1f}°, Umbral: {umbral_max_pitch_float:.1f}°"
                     guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_SENTADO", "ACTIVANDO", ts_pitch_float, umbral_max_pitch_float)
+                    agregar_a_consola(msg_alarma)
                 elif not condicion_sentado and alarma_pitch_sentado_activa:
+                    msg_alarma = f"ALARMA PITCH SENTADO DESACTIVADA. Valor: {ts_pitch_float:.1f}°"
                     guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_SENTADO", "DESACTIVANDO", ts_pitch_float, umbral_max_pitch_float)
+                    agregar_a_consola(msg_alarma)
                 alarma_pitch_sentado_activa = condicion_sentado
                 
             except (ValueError, KeyError) as e: # Si hay error en conversión o claves
@@ -2594,6 +2662,7 @@ def main():
                 if not nmea_data_stale: # Si acabamos de perder datos
                     reset_ui_data() # Limpiar todos los valores en pantalla
                     nmea_data_stale = True # Marcar que los datos son viejos
+                    agregar_a_consola("NMEA: NO HAY DATOS (TIMEOUT)")
                 
                 mensaje_no_datos_actual = TEXTOS[IDIOMA]["no_datos"]
                 texto_no_datos_surf = font.render(mensaje_no_datos_actual, True, ROJO)
@@ -2603,6 +2672,7 @@ def main():
             if not nmea_data_stale: # Si acabamos de detectar la desconexión
                 reset_ui_data()
                 nmea_data_stale = True
+                agregar_a_consola(f"NMEA: Puerto {puerto} DESCONECTADO.")
             
             mensaje_desconexion_actual = TEXTOS[IDIOMA]["desconectado"]
             texto_desconexion_surf = font.render(mensaje_desconexion_actual, True, ROJO)
@@ -3078,12 +3148,17 @@ def main():
             screen.blit(input_gc_surf, (rect_input_apikey_google_cloud.left + 5, rect_input_apikey_google_cloud.top + 2))
             current_y_servicio += label_apikey_gc_surf.get_height() + padding_y_servicio + 10 # Espacio antes de botones
 
-            # Botones Guardar
-            button_servicio_width = 120
+            # Botones Guardar y Mostrar Consola
+            button_servicio_width = 150 # Un poco más ancho para "Mostrar Consola"
             button_servicio_height = 40
+            espacio_entre_botones_servicio = 10
+
+            y_botones_servicio = rect_ventana_servicio_datos.bottom - button_servicio_height - padding_y_servicio
+
+            # Botón Guardar (a la izquierda)
             rect_boton_guardar_servicio = pygame.Rect(
-                rect_ventana_servicio_datos.centerx - button_servicio_width // 2,
-                rect_ventana_servicio_datos.bottom - button_servicio_height - padding_y_servicio,
+                rect_ventana_servicio_datos.centerx - button_servicio_width - espacio_entre_botones_servicio // 2,
+                y_botones_servicio,
                 button_servicio_width, button_servicio_height
             )
             globals()['rect_boton_guardar_servicio'] = rect_boton_guardar_servicio
@@ -3091,6 +3166,27 @@ def main():
             pygame.draw.rect(screen, COLOR_BOTON_BORDE, rect_boton_guardar_servicio, 1)
             guardar_servicio_surf = font.render(TEXTOS[IDIOMA]["boton_guardar"], True, COLOR_TEXTO_NORMAL)
             screen.blit(guardar_servicio_surf, guardar_servicio_surf.get_rect(center=rect_boton_guardar_servicio.center))
+
+            # Nuevo Botón Mostrar Consola (a la derecha)
+            rect_boton_mostrar_consola_servicio = pygame.Rect(
+                rect_ventana_servicio_datos.centerx + espacio_entre_botones_servicio // 2,
+                y_botones_servicio,
+                button_servicio_width, button_servicio_height
+            )
+            globals()['rect_boton_mostrar_consola_servicio'] = rect_boton_mostrar_consola_servicio
+            pygame.draw.rect(screen, COLOR_BOTON_FONDO, rect_boton_mostrar_consola_servicio)
+            pygame.draw.rect(screen, COLOR_BOTON_BORDE, rect_boton_mostrar_consola_servicio, 1)
+            mostrar_consola_servicio_surf = font.render(TEXTOS[IDIOMA]["boton_mostrar_consola"], True, COLOR_TEXTO_NORMAL)
+            screen.blit(mostrar_consola_servicio_surf, mostrar_consola_servicio_surf.get_rect(center=rect_boton_mostrar_consola_servicio.center))
+
+        # Ventana de Consola de Datos (dibujar si está visible)
+        # Debe dibujarse después de otras ventanas modales si se quiere que esté por encima,
+        # o antes si se quiere que pueda ser tapada. Por ahora, después de las de config.
+        elif mostrar_ventana_consola_datos:
+            # Usar una fuente estándar para la consola, o definir una específica
+            font_para_consola = pygame.font.Font(None, 22) # Puede ser la misma que font_bar_herramientas
+            draw_console_window(screen, font_para_consola, datos_consola_buffer)
+
 
         # Mostrar tiempo restante del periodo de gracia
         if PROGRAM_MODE == "GRACE_PERIOD" and grace_period_start_time_obj is not None:
@@ -3155,6 +3251,62 @@ def main():
         if ser.is_open:
             ser.close()
     pygame.quit()
+
+# --- Nueva función para dibujar la ventana de la consola ---
+def draw_console_window(screen, font_console, buffer_datos):
+    global rect_ventana_consola_datos, rect_boton_cerrar_consola_datos # Necesario para guardar los rects
+
+    ventana_consola_width = 800 # Aumentado de 600 a 800
+    ventana_consola_height = 400
+    # Centrar horizontalmente
+    ventana_consola_x = (screen.get_width() - ventana_consola_width) // 2
+    # Posicionar en la parte inferior con un pequeño margen
+    margen_inferior_consola = 20 # Píxeles desde el borde inferior
+    ventana_consola_y = screen.get_height() - ventana_consola_height - margen_inferior_consola
+    rect_ventana_consola_datos = pygame.Rect(ventana_consola_x, ventana_consola_y, ventana_consola_width, ventana_consola_height)
+
+    # Colores (pueden ser constantes globales o pasadas)
+    COLOR_FONDO_CONSOLA = (30, 30, 30) # Gris oscuro
+    COLOR_BORDE_CONSOLA = (80, 80, 80)
+    COLOR_TEXTO_CONSOLA = (200, 200, 200) # Gris claro
+    COLOR_BOTON_CERRAR_CONSOLA_FONDO = (50, 50, 50)
+
+    # Dibujar fondo y borde de la ventana
+    pygame.draw.rect(screen, COLOR_FONDO_CONSOLA, rect_ventana_consola_datos)
+    pygame.draw.rect(screen, COLOR_BORDE_CONSOLA, rect_ventana_consola_datos, 2)
+
+    # Título de la ventana
+    titulo_consola_surf = font_console.render("Consola de Datos", True, COLOR_TEXTO_CONSOLA)
+    screen.blit(titulo_consola_surf, (rect_ventana_consola_datos.centerx - titulo_consola_surf.get_width() // 2, rect_ventana_consola_datos.top + 10))
+
+    # Botón cerrar (X)
+    rect_boton_cerrar_consola_datos = pygame.Rect(rect_ventana_consola_datos.right - 30, rect_ventana_consola_datos.top + 5, 25, 25)
+    pygame.draw.rect(screen, COLOR_BOTON_CERRAR_CONSOLA_FONDO, rect_boton_cerrar_consola_datos)
+    cerrar_text_consola = font_console.render("X", True, COLOR_TEXTO_CONSOLA)
+    screen.blit(cerrar_text_consola, cerrar_text_consola.get_rect(center=rect_boton_cerrar_consola_datos.center))
+
+    # Área de texto para los datos
+    area_texto_x = rect_ventana_consola_datos.left + 10
+    area_texto_y = rect_ventana_consola_datos.top + titulo_consola_surf.get_height() + 20
+    area_texto_width = rect_ventana_consola_datos.width - 20
+    area_texto_height = rect_ventana_consola_datos.height - (titulo_consola_surf.get_height() + 30) - 10 # -10 para padding inferior
+
+    # Dibujar los datos del buffer (las últimas N líneas)
+    line_height = font_console.get_linesize()
+    max_lines_display = area_texto_height // line_height
+    
+    # Mostrar las últimas 'max_lines_display' líneas del buffer
+    start_index = max(0, len(buffer_datos) - max_lines_display)
+    
+    current_y_text = area_texto_y
+    for i in range(start_index, len(buffer_datos)):
+        linea_texto = buffer_datos[i]
+        texto_surf = font_console.render(linea_texto, True, COLOR_TEXTO_CONSOLA)
+        screen.blit(texto_surf, (area_texto_x, current_y_text))
+        current_y_text += line_height
+        if current_y_text + line_height > area_texto_y + area_texto_height: # No dibujar fuera del área
+            break
+# --- Fin de la nueva función ---
 
 # Punto de entrada del programa
 if __name__ == "__main__":
