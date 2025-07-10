@@ -21,9 +21,18 @@ def resource_path(relative_path):
     try:
         # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
-    except Exception:
+        # print(f"INFO: Running in PyInstaller mode, base_path: {base_path}") # Opcional: para depuración
+    except AttributeError:
         # sys._MEIPASS no está definido, así que estamos en desarrollo
-        base_path = os.path.dirname(os.path.abspath(__file__)) # Usar el directorio del script
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        # print(f"INFO: Running in development mode, base_path: {base_path}") # Opcional: para depuración
+    except Exception as e:
+        # Capturar cualquier otra excepción inesperada durante la determinación de base_path
+        print(f"ERROR: Unexpected error in resource_path: {e}")
+        # Fallback a un comportamiento por defecto o relanzar, según se prefiera.
+        # Por ahora, usamos el directorio del script como fallback seguro.
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        print(f"INFO: Falling back to development mode path due to unexpected error.")
     return os.path.join(base_path, relative_path)
 
 import hashlib # Para generar la clave de licencia
@@ -395,7 +404,10 @@ try:
             sonido.set_volume(0.7)
             
 except pygame.error as e:
-    print(f"Error al cargar archivos de sonido: {e}")
+    print(f"ERROR CRÍTICO: No se pudieron cargar algunos o todos los archivos de sonido: {e}")
+    print("Por favor, asegúrese de que los archivos .mp3 de alarma (alarma_babor.mp3, alarma_estribor.mp3, etc., y sus equivalentes en inglés si se usan) estén presentes en el directorio correcto.")
+    print("La funcionalidad de alarma sonora podría estar limitada.")
+    # Se mantiene la asignación a None para que el programa pueda continuar sin los sonidos.
     sonidos_es = {'babor': None, 'estribor': None, 'sentado': None, 'encabuzado': None}
     sonidos_en = {'babor': None, 'estribor': None, 'sentado': None, 'encabuzado': None}
 
@@ -533,11 +545,13 @@ def parse_pfec_gpatt(sentence):
             att_roll_str = raw_roll_part if raw_roll_part else "N/A"
             try: 
                 ts_roll_float = float(raw_roll_part)
-            except: 
+            except ValueError: # Específico para error de conversión a float
                 ts_roll_float = 0.0
             ultima_vez_datos_recibidos = pygame.time.get_ticks()
-    except: 
-        pass
+    except (IndexError, ValueError) as e:
+        print(f"Error parseando sentencia PFEC,GPatt: {e}. Sentencia: {sentence}")
+    except Exception as e:
+        print(f"Error inesperado en parse_pfec_gpatt: {e}. Sentencia: {sentence}")
 
 def convertir_coord(coord_str, direccion, is_longitude=False):
     try:
@@ -623,8 +637,10 @@ def parse_gll(sentence):
         ts_lat_decimal, ts_lon_decimal = ts_lat_decimal_temp, ts_lon_decimal_temp
         ultima_vez_datos_recibidos = pygame.time.get_ticks()
         
-    except: 
-        pass
+    except (IndexError, ValueError) as e:
+        print(f"Error parseando sentencia GLL: {e}. Sentencia: {sentence}")
+    except Exception as e:
+        print(f"Error inesperado en parse_gll: {e}. Sentencia: {sentence}")
 
     
 
@@ -674,8 +690,10 @@ def parse_gga(sentence):
             latitude_str, longitude_str = latitude_str_temp, longitude_str_temp
             ts_lat_decimal, ts_lon_decimal = ts_lat_decimal_temp, ts_lon_decimal_temp
             ultima_vez_datos_recibidos = pygame.time.get_ticks()
-    except: 
-        pass
+    except (IndexError, ValueError) as e:
+        print(f"Error parseando sentencia GGA: {e}. Sentencia: {sentence}")
+    except Exception as e:
+        print(f"Error inesperado en parse_gga: {e}. Sentencia: {sentence}")
 
 def parse_rmc(sentence):
     global ultima_vez_datos_recibidos
@@ -723,8 +741,10 @@ def parse_rmc(sentence):
             latitude_str, longitude_str = latitude_str_temp, longitude_str_temp
             ts_lat_decimal, ts_lon_decimal = ts_lat_decimal_temp, ts_lon_decimal_temp
             ultima_vez_datos_recibidos = pygame.time.get_ticks()
-    except: 
-        pass
+    except (IndexError, ValueError) as e:
+        print(f"Error parseando sentencia RMC: {e}. Sentencia: {sentence}")
+    except Exception as e:
+        print(f"Error inesperado en parse_rmc: {e}. Sentencia: {sentence}")
 
 def parse_vtg(sentence):
     global speed_str, ultima_vez_datos_recibidos, ts_speed_float
@@ -753,8 +773,10 @@ def parse_vtg(sentence):
         else: 
             speed_str = "N/A Kt"
             ts_speed_float = 0.0
-    except: 
-        pass
+    except (IndexError, ValueError) as e:
+        print(f"Error parseando sentencia VTG: {e}. Sentencia: {sentence}")
+    except Exception as e:
+        print(f"Error inesperado en parse_vtg: {e}. Sentencia: {sentence}")
 
 def parse_hdt(sentence):
     global heading_str, ultima_vez_datos_recibidos, ts_heading_float
@@ -770,8 +792,10 @@ def parse_hdt(sentence):
                 heading_str = f"{heading_val_str}°"
                 ts_heading_float = 0.0 
             ultima_vez_datos_recibidos = pygame.time.get_ticks()
-    except: 
-        pass
+    except (IndexError, ValueError) as e:
+        print(f"Error parseando sentencia HDT: {e}. Sentencia: {sentence}")
+    except Exception as e:
+        print(f"Error inesperado en parse_hdt: {e}. Sentencia: {sentence}")
 
 def parse_hdg(sentence):
     global heading_str, ultima_vez_datos_recibidos, ts_heading_float
@@ -787,8 +811,10 @@ def parse_hdg(sentence):
                 heading_str = f"{heading_val_str}°"
                 ts_heading_float = 0.0
             ultima_vez_datos_recibidos = pygame.time.get_ticks()
-    except: 
-        pass
+    except (IndexError, ValueError) as e:
+        print(f"Error parseando sentencia HDG: {e}. Sentencia: {sentence}")
+    except Exception as e:
+        print(f"Error inesperado en parse_hdg: {e}. Sentencia: {sentence}")
 
 def parse_gpzda(sentence):
     global ts_timestamp_str 
@@ -806,8 +832,10 @@ def parse_gpzda(sentence):
                 m = time_utc_str[2:4]
                 s = time_utc_str[4:6]
                 ts_timestamp_str = f"{year_str}-{month_str.zfill(2)}-{day_str.zfill(2)} {h}:{m}:{s}"
-    except: 
-        pass
+    except (IndexError, ValueError) as e:
+        print(f"Error parseando sentencia GPZDA/GNZDA: {e}. Sentencia: {sentence}")
+    except Exception as e:
+        print(f"Error inesperado en parse_gpzda: {e}. Sentencia: {sentence}")
 
 def reset_ui_data():
     global latitude_str, longitude_str, speed_str, heading_str
