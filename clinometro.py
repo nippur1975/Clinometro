@@ -21,9 +21,18 @@ def resource_path(relative_path):
     try:
         # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
-    except Exception:
+        # print(f"INFO: Running in PyInstaller mode, base_path: {base_path}") # Opcional: para depuración
+    except AttributeError:
         # sys._MEIPASS no está definido, así que estamos en desarrollo
-        base_path = os.path.dirname(os.path.abspath(__file__)) # Usar el directorio del script
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        # print(f"INFO: Running in development mode, base_path: {base_path}") # Opcional: para depuración
+    except Exception as e:
+        # Capturar cualquier otra excepción inesperada durante la determinación de base_path
+        print(f"ERROR: Unexpected error in resource_path: {e}")
+        # Fallback a un comportamiento por defecto o relanzar, según se prefiera.
+        # Por ahora, usamos el directorio del script como fallback seguro.
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        print(f"INFO: Falling back to development mode path due to unexpected error.")
     return os.path.join(base_path, relative_path)
 
 import hashlib # Para generar la clave de licencia
@@ -395,7 +404,10 @@ try:
             sonido.set_volume(0.7)
             
 except pygame.error as e:
-    print(f"Error al cargar archivos de sonido: {e}")
+    print(f"ERROR CRÍTICO: No se pudieron cargar algunos o todos los archivos de sonido: {e}")
+    print("Por favor, asegúrese de que los archivos .mp3 de alarma (alarma_babor.mp3, alarma_estribor.mp3, etc., y sus equivalentes en inglés si se usan) estén presentes en el directorio correcto.")
+    print("La funcionalidad de alarma sonora podría estar limitada.")
+    # Se mantiene la asignación a None para que el programa pueda continuar sin los sonidos.
     sonidos_es = {'babor': None, 'estribor': None, 'sentado': None, 'encabuzado': None}
     sonidos_en = {'babor': None, 'estribor': None, 'sentado': None, 'encabuzado': None}
 
@@ -533,11 +545,13 @@ def parse_pfec_gpatt(sentence):
             att_roll_str = raw_roll_part if raw_roll_part else "N/A"
             try: 
                 ts_roll_float = float(raw_roll_part)
-            except: 
+            except ValueError: # Específico para error de conversión a float
                 ts_roll_float = 0.0
             ultima_vez_datos_recibidos = pygame.time.get_ticks()
-    except: 
-        pass
+    except (IndexError, ValueError) as e:
+        print(f"Error parseando sentencia PFEC,GPatt: {e}. Sentencia: {sentence}")
+    except Exception as e:
+        print(f"Error inesperado en parse_pfec_gpatt: {e}. Sentencia: {sentence}")
 
 def convertir_coord(coord_str, direccion, is_longitude=False):
     try:
@@ -623,8 +637,10 @@ def parse_gll(sentence):
         ts_lat_decimal, ts_lon_decimal = ts_lat_decimal_temp, ts_lon_decimal_temp
         ultima_vez_datos_recibidos = pygame.time.get_ticks()
         
-    except: 
-        pass
+    except (IndexError, ValueError) as e:
+        print(f"Error parseando sentencia GLL: {e}. Sentencia: {sentence}")
+    except Exception as e:
+        print(f"Error inesperado en parse_gll: {e}. Sentencia: {sentence}")
 
     
 
@@ -674,8 +690,10 @@ def parse_gga(sentence):
             latitude_str, longitude_str = latitude_str_temp, longitude_str_temp
             ts_lat_decimal, ts_lon_decimal = ts_lat_decimal_temp, ts_lon_decimal_temp
             ultima_vez_datos_recibidos = pygame.time.get_ticks()
-    except: 
-        pass
+    except (IndexError, ValueError) as e:
+        print(f"Error parseando sentencia GGA: {e}. Sentencia: {sentence}")
+    except Exception as e:
+        print(f"Error inesperado en parse_gga: {e}. Sentencia: {sentence}")
 
 def parse_rmc(sentence):
     global ultima_vez_datos_recibidos
@@ -723,8 +741,10 @@ def parse_rmc(sentence):
             latitude_str, longitude_str = latitude_str_temp, longitude_str_temp
             ts_lat_decimal, ts_lon_decimal = ts_lat_decimal_temp, ts_lon_decimal_temp
             ultima_vez_datos_recibidos = pygame.time.get_ticks()
-    except: 
-        pass
+    except (IndexError, ValueError) as e:
+        print(f"Error parseando sentencia RMC: {e}. Sentencia: {sentence}")
+    except Exception as e:
+        print(f"Error inesperado en parse_rmc: {e}. Sentencia: {sentence}")
 
 def parse_vtg(sentence):
     global speed_str, ultima_vez_datos_recibidos, ts_speed_float
@@ -753,8 +773,10 @@ def parse_vtg(sentence):
         else: 
             speed_str = "N/A Kt"
             ts_speed_float = 0.0
-    except: 
-        pass
+    except (IndexError, ValueError) as e:
+        print(f"Error parseando sentencia VTG: {e}. Sentencia: {sentence}")
+    except Exception as e:
+        print(f"Error inesperado en parse_vtg: {e}. Sentencia: {sentence}")
 
 def parse_hdt(sentence):
     global heading_str, ultima_vez_datos_recibidos, ts_heading_float
@@ -770,8 +792,10 @@ def parse_hdt(sentence):
                 heading_str = f"{heading_val_str}°"
                 ts_heading_float = 0.0 
             ultima_vez_datos_recibidos = pygame.time.get_ticks()
-    except: 
-        pass
+    except (IndexError, ValueError) as e:
+        print(f"Error parseando sentencia HDT: {e}. Sentencia: {sentence}")
+    except Exception as e:
+        print(f"Error inesperado en parse_hdt: {e}. Sentencia: {sentence}")
 
 def parse_hdg(sentence):
     global heading_str, ultima_vez_datos_recibidos, ts_heading_float
@@ -787,8 +811,10 @@ def parse_hdg(sentence):
                 heading_str = f"{heading_val_str}°"
                 ts_heading_float = 0.0
             ultima_vez_datos_recibidos = pygame.time.get_ticks()
-    except: 
-        pass
+    except (IndexError, ValueError) as e:
+        print(f"Error parseando sentencia HDG: {e}. Sentencia: {sentence}")
+    except Exception as e:
+        print(f"Error inesperado en parse_hdg: {e}. Sentencia: {sentence}")
 
 def parse_gpzda(sentence):
     global ts_timestamp_str 
@@ -806,8 +832,10 @@ def parse_gpzda(sentence):
                 m = time_utc_str[2:4]
                 s = time_utc_str[4:6]
                 ts_timestamp_str = f"{year_str}-{month_str.zfill(2)}-{day_str.zfill(2)} {h}:{m}:{s}"
-    except: 
-        pass
+    except (IndexError, ValueError) as e:
+        print(f"Error parseando sentencia GPZDA/GNZDA: {e}. Sentencia: {sentence}")
+    except Exception as e:
+        print(f"Error inesperado en parse_gpzda: {e}. Sentencia: {sentence}")
 
 def reset_ui_data():
     global latitude_str, longitude_str, speed_str, heading_str
@@ -2262,21 +2290,21 @@ def main():
                 try:
                     valor_pitch_float = float(att_pitch_str)
                     angulo_rotacion_pygame = -valor_pitch_float
-                    imagen_pitch_rotada_grande = pygame.transform.rotate(pitch_image_base_grande, angulo_rotacion_pygame) # Asegurar esta línea y las siguientes están indentadas un nivel más que el try
+                    imagen_pitch_rotada_grande = pygame.transform.rotate(pitch_image_base_grande, angulo_rotacion_pygame)
                     diametro_claraboya = 2 * radio_circulo_img
                     claraboya_surface = pygame.Surface((diametro_claraboya, diametro_claraboya), pygame.SRCALPHA)
                     claraboya_surface.fill((0,0,0,0))
                     offset_x = (diametro_claraboya - imagen_pitch_rotada_grande.get_width()) // 2
                     offset_y = (diametro_claraboya - imagen_pitch_rotada_grande.get_height()) // 2
                     claraboya_surface.blit(imagen_pitch_rotada_grande, (offset_x, offset_y))
-                    mask = pygame.Surface((diametro_claraboya, diametro_claraboya), pygame.SRCALPHA)
-                    mask.fill((0,0,0,0))
-                    pygame.draw.circle(mask, (255,255,255,255), (radio_circulo_img, radio_circulo_img), radio_circulo_img)
-                    claraboya_surface.blit(mask, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
+                    mask_pygame = pygame.Surface((diametro_claraboya, diametro_claraboya), pygame.SRCALPHA) # Renombrado mask a mask_pygame para evitar conflicto con módulo mask
+                    mask_pygame.fill((0,0,0,0))
+                    pygame.draw.circle(mask_pygame, (255,255,255,255), (radio_circulo_img, radio_circulo_img), radio_circulo_img)
+                    claraboya_surface.blit(mask_pygame, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
                     rect_claraboya_final = claraboya_surface.get_rect(center=(centro_x_circulo1, centro_y_circulos))
                     screen.blit(claraboya_surface, rect_claraboya_final)
                 except ValueError:
-                    pass # Si float(att_pitch_str) falla, no se dibuja la imagen.
+                    pass 
             
             pygame.draw.circle(screen, BLANCO, (centro_x_circulo1, centro_y_circulos), radio_circulo_img, 2)
             
@@ -2317,7 +2345,7 @@ def main():
             disabled_text_surf = font.render(TEXTOS[IDIOMA]["data_disabled_trial"], True, ROJO)
             disabled_text_rect = disabled_text_surf.get_rect(center=(centro_x_circulo1, centro_y_circulos))
             screen.blit(disabled_text_surf, disabled_text_rect)
-            # Dibujar marcas y etiquetas para pitch (siempre visibles)
+            pygame.draw.circle(screen, BLANCO, (centro_x_circulo1, centro_y_circulos), radio_circulo_img, 2) # Dibujar borde del círculo
             for key, (angle_deg, etiqueta_str) in ANGULOS_MARCAS_ETIQUETAS_DEF.items():
                 angle_rad = math.radians(angle_deg)
                 x_inicio_marca = centro_x_circulo1 + RADIO_INICIO_MARCAS * math.cos(angle_rad)
@@ -2337,7 +2365,6 @@ def main():
                 try:
                     valor_roll_float = float(att_roll_str)
                     angulo_rotacion_pygame_roll = -valor_roll_float
-                    # Correctamente indentado dentro del try:
                     imagen_roll_rotada_grande = pygame.transform.rotate(roll_image_base_grande, angulo_rotacion_pygame_roll)
                     diametro_claraboya_roll = 2 * radio_circulo_img
                     claraboya_surface_roll = pygame.Surface((diametro_claraboya_roll, diametro_claraboya_roll), pygame.SRCALPHA)
@@ -2345,64 +2372,17 @@ def main():
                     offset_x_roll = (diametro_claraboya_roll - imagen_roll_rotada_grande.get_width()) // 2
                     offset_y_roll = (diametro_claraboya_roll - imagen_roll_rotada_grande.get_height()) // 2
                     claraboya_surface_roll.blit(imagen_roll_rotada_grande, (offset_x_roll, offset_y_roll))
-                    mask_roll = pygame.Surface((diametro_claraboya_roll, diametro_claraboya_roll), pygame.SRCALPHA)
-                    mask_roll.fill((0,0,0,0))
-                    pygame.draw.circle(mask_roll, (255,255,255,255), (radio_circulo_img, radio_circulo_img), radio_circulo_img)
-                    claraboya_surface_roll.blit(mask_roll, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
+                    mask_roll_pygame = pygame.Surface((diametro_claraboya_roll, diametro_claraboya_roll), pygame.SRCALPHA) # Renombrado mask_roll a mask_roll_pygame
+                    mask_roll_pygame.fill((0,0,0,0))
+                    pygame.draw.circle(mask_roll_pygame, (255,255,255,255), (radio_circulo_img, radio_circulo_img), radio_circulo_img)
+                    claraboya_surface_roll.blit(mask_roll_pygame, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
                     rect_claraboya_final_roll = claraboya_surface_roll.get_rect(center=(centro_x_circulo2, centro_y_circulos))
                     screen.blit(claraboya_surface_roll, rect_claraboya_final_roll)
                 except ValueError:
-                    pass # Si float(att_roll_str) falla, no se dibuja la imagen.
+                    pass
             
-        pygame.draw.circle(screen, BLANCO, (centro_x_circulo2, centro_y_circulos), radio_circulo_img, 2)
+            pygame.draw.circle(screen, BLANCO, (centro_x_circulo2, centro_y_circulos), radio_circulo_img, 2)
             
-    for key, (angle_deg, etiqueta_str) in ANGULOS_MARCAS_ETIQUETAS_DEF.items():
-                angle_rad = math.radians(angle_deg)
-                x_inicio_marca_roll = centro_x_circulo2 + RADIO_INICIO_MARCAS * math.cos(angle_rad)
-                y_inicio_marca_roll = centro_y_circulos + RADIO_INICIO_MARCAS * math.sin(angle_rad)
-                x_fin_marca_roll = centro_x_circulo2 + RADIO_FIN_MARCAS * math.cos(angle_rad)
-                y_fin_marca_roll = centro_y_circulos + RADIO_FIN_MARCAS * math.sin(angle_rad)
-                pygame.draw.line(screen, COLOR_MARCA_GRADO, (x_inicio_marca_roll, y_inicio_marca_roll), (x_fin_marca_roll, y_fin_marca_roll), GROSOR_MARCA_GRADO)
-                etiqueta_surf_roll = font.render(etiqueta_str, True, COLOR_ETIQUETA_GRADO)
-                x_texto_etiqueta_roll = centro_x_circulo2 + RADIO_POSICION_TEXTO_ETIQUETA * math.cos(angle_rad)
-                y_texto_etiqueta_roll = centro_y_circulos + RADIO_POSICION_TEXTO_ETIQUETA * math.sin(angle_rad)
-                etiqueta_rect_roll = etiqueta_surf_roll.get_rect(center=(int(x_texto_etiqueta_roll), int(y_texto_etiqueta_roll)))
-                screen.blit(etiqueta_surf_roll, etiqueta_rect_roll)
-    if att_roll_str != "N/A":
-        try:
-            valor_roll_float = float(att_roll_str)
-            roll_valor_surf = font_circulos_textos.render(f"{valor_roll_float:+.1f}°", True, BLANCO)
-            y_pos_texto_roll = centro_y_circulos + radio_circulo_img * 0.0282
-            roll_valor_rect = roll_valor_surf.get_rect(center=(centro_x_circulo2, y_pos_texto_roll))
-            screen.blit(roll_valor_surf, roll_valor_rect)
-                    
-            letra_roll_str = ""
-            if valor_roll_float > 0.1: letra_roll_str = "S"
-            elif valor_roll_float < -0.1: letra_roll_str = "P"
-            if letra_roll_str:
-                        letra_roll_surf = font_circulos_textos.render(letra_roll_str, True, COLOR_LETRA_ROLL)
-                        letra_roll_rect = letra_roll_surf.get_rect(midtop=(roll_valor_rect.centerx, roll_valor_rect.bottom + OFFSET_LETRA_ROLL_Y))
-                        screen.blit(letra_roll_surf, letra_roll_rect)
-
-            pos_flecha_roll_y_centro = roll_valor_rect.centery
-            if valor_roll_float > 0.1:
-                        pos_flecha_roll_x = roll_valor_rect.right + OFFSET_FLECHA_TEXTO + (LONGITUD_FLECHA_DIR // 2)
-                        pygame.draw.line(screen, VERDE, (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
-                        pygame.draw.line(screen, VERDE, (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro - ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
-                        pygame.draw.line(screen, VERDE, (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro + ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
-            elif valor_roll_float < -0.1:
-                        pos_flecha_roll_x = roll_valor_rect.left - OFFSET_FLECHA_TEXTO - (LONGITUD_FLECHA_DIR // 2)
-                        pygame.draw.line(screen, ROJO, (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
-                        pygame.draw.line(screen, ROJO, (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro - ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
-                        pygame.draw.line(screen, ROJO, (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro + ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
-        except ValueError:
-                pass
-    else: # PROGRAM_MODE == "TRIAL_EXPIRED"
-        try:
-            disabled_text_surf = font.render(TEXTOS[IDIOMA]["data_disabled_trial"], True, ROJO)
-            disabled_text_rect = disabled_text_surf.get_rect(center=(centro_x_circulo2, centro_y_circulos))
-            screen.blit(disabled_text_surf, disabled_text_rect)
-
             for key, (angle_deg, etiqueta_str) in ANGULOS_MARCAS_ETIQUETAS_DEF.items():
                 angle_rad = math.radians(angle_deg)
                 x_inicio_marca_roll = centro_x_circulo2 + RADIO_INICIO_MARCAS * math.cos(angle_rad)
@@ -2416,181 +2396,53 @@ def main():
                 etiqueta_rect_roll = etiqueta_surf_roll.get_rect(center=(int(x_texto_etiqueta_roll), int(y_texto_etiqueta_roll)))
                 screen.blit(etiqueta_surf_roll, etiqueta_rect_roll)
 
-        # Dibujar cajas de datos
-                espacio_entre_cajas_vertical = 10
-                ancho_cajas_datos = 280 # Ancho fijo para las 3 cajas
-                imagen_pitch_rotada_grande = pygame.transform.rotate(pitch_image_base_grande, angulo_rotacion_pygame)
-                
-                # Crear "claraboya" (máscara circular)
-                diametro_claraboya = 2 * radio_circulo_img
-                claraboya_surface = pygame.Surface((diametro_claraboya, diametro_claraboya), pygame.SRCALPHA) # Superficie transparente
-                claraboya_surface.fill((0,0,0,0)) # Llenar con transparencia
-                
-                # Centrar la imagen rotada en la superficie de la claraboya
-                offset_x = (diametro_claraboya - imagen_pitch_rotada_grande.get_width()) // 2
-                offset_y = (diametro_claraboya - imagen_pitch_rotada_grande.get_height()) // 2
-                claraboya_surface.blit(imagen_pitch_rotada_grande, (offset_x, offset_y))
-                
-                # Crear máscara circular
-                mask = pygame.Surface((diametro_claraboya, diametro_claraboya), pygame.SRCALPHA)
-                mask.fill((0,0,0,0)) # Transparente por defecto
-                pygame.draw.circle(mask, (255,255,255,255), (radio_circulo_img, radio_circulo_img), radio_circulo_img) # Círculo opaco
-                
-                # Aplicar máscara a la claraboya (mostrar solo la parte circular de la imagen rotada)
-                claraboya_surface.blit(mask, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
-                
-                # Dibujar la claraboya final en la pantalla
-                rect_claraboya_final = claraboya_surface.get_rect(center=(centro_x_circulo1, centro_y_circulos))
-                screen.blit(claraboya_surface, rect_claraboya_final)    
-        except ValueError:
-                    pass # Si att_pitch_str no es un float válido
-        
-    pygame.draw.circle(screen, BLANCO, (centro_x_circulo1, centro_y_circulos), radio_circulo_img, 2) # Redibujar borde por si la imagen lo tapa
-        
-        # Dibujar marcas y etiquetas para pitch
-    for key, (angle_deg, etiqueta_str) in ANGULOS_MARCAS_ETIQUETAS_DEF.items():
-            angle_rad = math.radians(angle_deg) # Convertir a radianes
-            # Calcular puntos de inicio y fin de la marca
-            x_inicio_marca = centro_x_circulo1 + RADIO_INICIO_MARCAS * math.cos(angle_rad)
-            y_inicio_marca = centro_y_circulos + RADIO_INICIO_MARCAS * math.sin(angle_rad) # Sumar para Y (hacia abajo)
-            x_fin_marca = centro_x_circulo1 + RADIO_FIN_MARCAS * math.cos(angle_rad)
-            y_fin_marca = centro_y_circulos + RADIO_FIN_MARCAS * math.sin(angle_rad) # Sumar para Y
-            
-            pygame.draw.line(screen, COLOR_MARCA_GRADO, (x_inicio_marca, y_inicio_marca), (x_fin_marca, y_fin_marca), GROSOR_MARCA_GRADO)
-            
-            # Posicionar texto de etiqueta
-            etiqueta_surf = font.render(etiqueta_str, True, COLOR_ETIQUETA_GRADO)
-            x_texto_etiqueta = centro_x_circulo1 + RADIO_POSICION_TEXTO_ETIQUETA * math.cos(angle_rad)
-            y_texto_etiqueta = centro_y_circulos + RADIO_POSICION_TEXTO_ETIQUETA * math.sin(angle_rad) # Sumar para Y
-            
-            etiqueta_rect = etiqueta_surf.get_rect(center=(int(x_texto_etiqueta), int(y_texto_etiqueta)))
-            screen.blit(etiqueta_surf, etiqueta_rect)
-        
-        # Mostrar valor de pitch
-    if att_pitch_str != "N/A":
-        try:
-                valor_pitch_float = float(att_pitch_str)
-                pitch_valor_surf = font_circulos_textos.render(f"{valor_pitch_float:+.1f}°", True, BLANCO)
-                # Ajustar la posición Y del texto del valor de pitch para que esté más centrado
-                y_pos_texto_pitch = centro_y_circulos + radio_circulo_img * 0.0282 # Ajuste fino basado en pruebas
-                pitch_valor_rect = pitch_valor_surf.get_rect(center=(centro_x_circulo1, y_pos_texto_pitch))
-                screen.blit(pitch_valor_surf, pitch_valor_rect)
-                
-                # Dibujar flecha de dirección para Pitch
-                pos_flecha_pitch_x = pitch_valor_rect.left - OFFSET_FLECHA_TEXTO - (LONGITUD_FLECHA_DIR // 2)
-                pos_flecha_pitch_y_centro = pitch_valor_rect.centery
-                
-                if valor_pitch_float > 0.1: # Flecha hacia arriba (positivo)
-                    pygame.draw.line(screen, BLANCO, 
-                                   (pos_flecha_pitch_x, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2),
-                                   (pos_flecha_pitch_x, pos_flecha_pitch_y_centro - LONGITUD_FLECHA_DIR // 2), 2) # Palo vertical
-                    pygame.draw.line(screen, BLANCO, 
-                                   (pos_flecha_pitch_x - ANCHO_FLECHA_DIR // 2, pos_flecha_pitch_y_centro - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2),
-                                   (pos_flecha_pitch_x, pos_flecha_pitch_y_centro - LONGITUD_FLECHA_DIR // 2), 2) # Punta izquierda
-                    pygame.draw.line(screen, BLANCO, 
-                                   (pos_flecha_pitch_x + ANCHO_FLECHA_DIR // 2, pos_flecha_pitch_y_centro - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2),
-                                   (pos_flecha_pitch_x, pos_flecha_pitch_y_centro - LONGITUD_FLECHA_DIR // 2), 2) # Punta derecha
-                elif valor_pitch_float < -0.1: # Flecha hacia abajo (negativo)
-                    pygame.draw.line(screen, BLANCO, 
-                                   (pos_flecha_pitch_x, pos_flecha_pitch_y_centro - LONGITUD_FLECHA_DIR // 2),
-                                   (pos_flecha_pitch_x, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2), 2) # Palo vertical
-                    pygame.draw.line(screen, BLANCO, 
-                                   (pos_flecha_pitch_x - ANCHO_FLECHA_DIR // 2, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2),
-                                   (pos_flecha_pitch_x, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2), 2) # Punta izquierda
-                    pygame.draw.line(screen, BLANCO, 
-                                   (pos_flecha_pitch_x + ANCHO_FLECHA_DIR // 2, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2),
-                                   (pos_flecha_pitch_x, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2), 2) # Punta derecha
-        except ValueError:
-                pass
-        
-        # Dibujar indicador de roll
-        if roll_image_base_grande and att_roll_str != "N/A":
-            try:
-                valor_roll_float = float(att_roll_str)
-                angulo_rotacion_pygame_roll = -valor_roll_float # Negativo porque Pygame rota antihorario
-                imagen_roll_rotada_grande = pygame.transform.rotate(roll_image_base_grande, angulo_rotacion_pygame_roll)
-                
-                diametro_claraboya_roll = 2 * radio_circulo_img
-                claraboya_surface_roll = pygame.Surface((diametro_claraboya_roll, diametro_claraboya_roll), pygame.SRCALPHA)
-                claraboya_surface_roll.fill((0,0,0,0))
-                
-                offset_x_roll = (diametro_claraboya_roll - imagen_roll_rotada_grande.get_width()) // 2
-                offset_y_roll = (diametro_claraboya_roll - imagen_roll_rotada_grande.get_height()) // 2
-                claraboya_surface_roll.blit(imagen_roll_rotada_grande, (offset_x_roll, offset_y_roll))
-                
-                mask_roll = pygame.Surface((diametro_claraboya_roll, diametro_claraboya_roll), pygame.SRCALPHA)
-                mask_roll.fill((0,0,0,0))
-                pygame.draw.circle(mask_roll, (255,255,255,255), (radio_circulo_img, radio_circulo_img), radio_circulo_img)
-                claraboya_surface_roll.blit(mask_roll, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
-                
-                rect_claraboya_final_roll = claraboya_surface_roll.get_rect(center=(centro_x_circulo2, centro_y_circulos))
-                screen.blit(claraboya_surface_roll, rect_claraboya_final_roll)
-            except ValueError:
-                pass
-        
-        pygame.draw.circle(screen, BLANCO, (centro_x_circulo2, centro_y_circulos), radio_circulo_img, 2) # Redibujar borde
-        
-        # Dibujar marcas y etiquetas para roll (similar a pitch)
-        for key, (angle_deg, etiqueta_str) in ANGULOS_MARCAS_ETIQUETAS_DEF.items():
-            angle_rad = math.radians(angle_deg)
-            x_inicio_marca_roll = centro_x_circulo2 + RADIO_INICIO_MARCAS * math.cos(angle_rad)
-            y_inicio_marca_roll = centro_y_circulos + RADIO_INICIO_MARCAS * math.sin(angle_rad)
-            x_fin_marca_roll = centro_x_circulo2 + RADIO_FIN_MARCAS * math.cos(angle_rad)
-            y_fin_marca_roll = centro_y_circulos + RADIO_FIN_MARCAS * math.sin(angle_rad)
-            pygame.draw.line(screen, COLOR_MARCA_GRADO, (x_inicio_marca_roll, y_inicio_marca_roll), (x_fin_marca_roll, y_fin_marca_roll), GROSOR_MARCA_GRADO)
-            
-            etiqueta_surf_roll = font.render(etiqueta_str, True, COLOR_ETIQUETA_GRADO)
-            x_texto_etiqueta_roll = centro_x_circulo2 + RADIO_POSICION_TEXTO_ETIQUETA * math.cos(angle_rad)
-            y_texto_etiqueta_roll = centro_y_circulos + RADIO_POSICION_TEXTO_ETIQUETA * math.sin(angle_rad)
-            etiqueta_rect_roll = etiqueta_surf_roll.get_rect(center=(int(x_texto_etiqueta_roll), int(y_texto_etiqueta_roll)))
-            screen.blit(etiqueta_surf_roll, etiqueta_rect_roll)
-        
-        # Mostrar valor de roll
-        if att_roll_str != "N/A":
-            try:
-                valor_roll_float = float(att_roll_str)
-                roll_valor_surf = font_circulos_textos.render(f"{valor_roll_float:+.1f}°", True, BLANCO)
-                y_pos_texto_roll = centro_y_circulos + radio_circulo_img * 0.0282 # Mismo ajuste Y que pitch
-                roll_valor_rect = roll_valor_surf.get_rect(center=(centro_x_circulo2, y_pos_texto_roll))
-                screen.blit(roll_valor_surf, roll_valor_rect)
-                
-                # Mostrar dirección de Roll (P/S)
-                letra_roll_str = ""
-                if valor_roll_float > 0.1: letra_roll_str = "S" # Estribor
-                elif valor_roll_float < -0.1: letra_roll_str = "P" # Babor
-                
-                if letra_roll_str:
-                    letra_roll_surf = font_circulos_textos.render(letra_roll_str, True, COLOR_LETRA_ROLL)
-                    letra_roll_rect = letra_roll_surf.get_rect(midtop=(roll_valor_rect.centerx, roll_valor_rect.bottom + OFFSET_LETRA_ROLL_Y))
-                    screen.blit(letra_roll_surf, letra_roll_rect)
+            if att_roll_str != "N/A":
+                try:
+                    valor_roll_float = float(att_roll_str)
+                    roll_valor_surf = font_circulos_textos.render(f"{valor_roll_float:+.1f}°", True, BLANCO)
+                    y_pos_texto_roll = centro_y_circulos + radio_circulo_img * 0.0282
+                    roll_valor_rect = roll_valor_surf.get_rect(center=(centro_x_circulo2, y_pos_texto_roll))
+                    screen.blit(roll_valor_surf, roll_valor_rect)
+                            
+                    letra_roll_str = ""
+                    if valor_roll_float > 0.1: letra_roll_str = "S"
+                    elif valor_roll_float < -0.1: letra_roll_str = "P"
+                    if letra_roll_str:
+                        letra_roll_surf = font_circulos_textos.render(letra_roll_str, True, COLOR_LETRA_ROLL)
+                        letra_roll_rect = letra_roll_surf.get_rect(midtop=(roll_valor_rect.centerx, roll_valor_rect.bottom + OFFSET_LETRA_ROLL_Y))
+                        screen.blit(letra_roll_surf, letra_roll_rect)
 
-                # Dibujar flecha de dirección para Roll
-                pos_flecha_roll_y_centro = roll_valor_rect.centery
-                if valor_roll_float > 0.1: # Flecha hacia la derecha (Estribor - Verde)
-                    pos_flecha_roll_x = roll_valor_rect.right + OFFSET_FLECHA_TEXTO + (LONGITUD_FLECHA_DIR // 2)
-                    pygame.draw.line(screen, VERDE, 
-                                   (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro),
-                                   (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2) # Palo horizontal
-                    pygame.draw.line(screen, VERDE, 
-                                   (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro - ANCHO_FLECHA_DIR // 2),
-                                   (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2) # Punta superior
-                    pygame.draw.line(screen, VERDE, 
-                                   (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro + ANCHO_FLECHA_DIR // 2),
-                                   (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2) # Punta inferior
-                elif valor_roll_float < -0.1: # Flecha hacia la izquierda (Babor - Rojo)
-                    pos_flecha_roll_x = roll_valor_rect.left - OFFSET_FLECHA_TEXTO - (LONGITUD_FLECHA_DIR // 2)
-                    pygame.draw.line(screen, ROJO, 
-                                   (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro),
-                                   (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2) # Palo horizontal
-                    pygame.draw.line(screen, ROJO, 
-                                   (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro - ANCHO_FLECHA_DIR // 2),
-                                   (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2) # Punta superior
-                    pygame.draw.line(screen, ROJO, 
-                                   (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro + ANCHO_FLECHA_DIR // 2),
-                                   (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2) # Punta inferior
-            except ValueError:
-                pass
-        
+                    pos_flecha_roll_y_centro = roll_valor_rect.centery
+                    if valor_roll_float > 0.1:
+                        pos_flecha_roll_x = roll_valor_rect.right + OFFSET_FLECHA_TEXTO + (LONGITUD_FLECHA_DIR // 2)
+                        pygame.draw.line(screen, VERDE, (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+                        pygame.draw.line(screen, VERDE, (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro - ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+                        pygame.draw.line(screen, VERDE, (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro + ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+                    elif valor_roll_float < -0.1:
+                        pos_flecha_roll_x = roll_valor_rect.left - OFFSET_FLECHA_TEXTO - (LONGITUD_FLECHA_DIR // 2)
+                        pygame.draw.line(screen, ROJO, (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+                        pygame.draw.line(screen, ROJO, (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro - ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+                        pygame.draw.line(screen, ROJO, (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro + ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+                except ValueError:
+                    pass
+        else: # PROGRAM_MODE == "TRIAL_EXPIRED"
+            disabled_text_surf = font.render(TEXTOS[IDIOMA]["data_disabled_trial"], True, ROJO)
+            disabled_text_rect = disabled_text_surf.get_rect(center=(centro_x_circulo2, centro_y_circulos))
+            screen.blit(disabled_text_surf, disabled_text_rect)
+            pygame.draw.circle(screen, BLANCO, (centro_x_circulo2, centro_y_circulos), radio_circulo_img, 2) # Dibujar borde del círculo
+            for key, (angle_deg, etiqueta_str) in ANGULOS_MARCAS_ETIQUETAS_DEF.items():
+                angle_rad = math.radians(angle_deg)
+                x_inicio_marca_roll = centro_x_circulo2 + RADIO_INICIO_MARCAS * math.cos(angle_rad)
+                y_inicio_marca_roll = centro_y_circulos + RADIO_INICIO_MARCAS * math.sin(angle_rad)
+                x_fin_marca_roll = centro_x_circulo2 + RADIO_FIN_MARCAS * math.cos(angle_rad)
+                y_fin_marca_roll = centro_y_circulos + RADIO_FIN_MARCAS * math.sin(angle_rad)
+                pygame.draw.line(screen, COLOR_MARCA_GRADO, (x_inicio_marca_roll, y_inicio_marca_roll), (x_fin_marca_roll, y_fin_marca_roll), GROSOR_MARCA_GRADO)
+                etiqueta_surf_roll = font.render(etiqueta_str, True, COLOR_ETIQUETA_GRADO)
+                x_texto_etiqueta_roll = centro_x_circulo2 + RADIO_POSICION_TEXTO_ETIQUETA * math.cos(angle_rad)
+                y_texto_etiqueta_roll = centro_y_circulos + RADIO_POSICION_TEXTO_ETIQUETA * math.sin(angle_rad)
+                etiqueta_rect_roll = etiqueta_surf_roll.get_rect(center=(int(x_texto_etiqueta_roll), int(y_texto_etiqueta_roll)))
+                screen.blit(etiqueta_surf_roll, etiqueta_rect_roll)
+
         # Dibujar cajas de datos
         espacio_entre_cajas_vertical = 10
         ancho_cajas_datos = 280 # Ancho fijo para las 3 cajas
@@ -3307,5 +3159,4 @@ def main():
 # Punto de entrada del programa
 if __name__ == "__main__":
     main()
-
 
