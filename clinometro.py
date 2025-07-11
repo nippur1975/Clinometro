@@ -35,6 +35,35 @@ def resource_path(relative_path):
         print(f"INFO: Falling back to development mode path due to unexpected error.")
     return os.path.join(base_path, relative_path)
 
+def get_persistent_data_path(filename: str) -> str:
+    """
+    Get absolute path to a data file that needs to persist.
+    Works for dev (saves next to .py file) and for PyInstaller (saves next to executable).
+    """
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        # Running in a PyInstaller bundle (frozen)
+        application_path = os.path.dirname(sys.executable)
+        # print(f"INFO: Running in PyInstaller mode (get_persistent_data_path), application_path: {application_path}") # Opcional: para depuración
+    else:
+        # Running in a normal Python environment (development)
+        application_path = os.path.dirname(os.path.abspath(__file__))
+        # print(f"INFO: Running in development mode (get_persistent_data_path), application_path: {application_path}") # Opcional: para depuración
+    
+    # Consider creating a subdirectory for application data if it doesn't exist
+    # data_dir = os.path.join(application_path, "LalitoData")
+    # if not os.path.exists(data_dir):
+    #     try:
+    #         os.makedirs(data_dir)
+    #     except OSError as e:
+    #         print(f"ERROR: Could not create data directory {data_dir}: {e}")
+    #         # Fallback to application_path if directory creation fails
+    #         return os.path.join(application_path, filename)
+    # return os.path.join(data_dir, filename)
+    
+    # Por ahora, guardaremos directamente en application_path para simplificar.
+    # Si se desea un subdirectorio, descomentar el bloque anterior y ajustar.
+    return os.path.join(application_path, filename)
+
 import hashlib # Para generar la clave de licencia
 import uuid    # Para el identificador de máquina
 try:
@@ -53,8 +82,8 @@ except ImportError:
     print("Advertencia: Biblioteca 'tkinter' no encontrada. La selección de archivo de licencia no estará disponible.")
 
 # --- Constantes para la Licencia ---
-LICENSE_FILE = resource_path("license.json")
-TRIAL_INFO_FILE = resource_path("trial_info.json") # Nuevo archivo para info del periodo de gracia
+LICENSE_FILE = get_persistent_data_path("license.json") # MODIFICADO
+TRIAL_INFO_FILE = get_persistent_data_path("trial_info.json") # MODIFICADO
 SECRET_KEY = "my_super_secret_clinometer_key" # ¡¡ESTA CLAVE DEBE SER IDÉNTICA A LA USADA EN EL GENERADOR DE LICENCIAS!!
 ACTIVATED_SUCCESSFULLY = False # Variable global para controlar el estado de activación en la sesión actual
 PROGRAM_MODE = "LOADING" # Posibles valores: "LOADING", "LICENSED", "GRACE_PERIOD", "TRIAL_EXPIRED", "ACTIVATION_UI_VISIBLE"
@@ -303,8 +332,8 @@ THINGSPEAK_URL = "https://api.thingspeak.com/update"
 # ALARM_LOG_FILENAME = "alarm_log.csv" 
 
 # Añade estas nuevas definiciones:
-CSV_FILENAME = resource_path("nmea_log.csv")
-ALARM_LOG_FILENAME = resource_path("alarm_log.csv")
+CSV_FILENAME = get_persistent_data_path("nmea_log.csv") # MODIFICADO
+ALARM_LOG_FILENAME = get_persistent_data_path("alarm_log.csv") # MODIFICADO
 
 INTERVALO_ENVIO_DATOS_S = 15 
 # ... (el resto de constantes sigue igual)
@@ -317,8 +346,8 @@ INTERVALO_ENVIO_DATOS_S = 15
 INTERVALO_REPETICION_ALARMA_ROLL_S = 5
 INTERVALO_REPETICION_ALARMA_PITCH_S = 5
 
-ARCHIVO_CONFIG_SERIAL = "config_serial.json"
-ARCHIVO_CONFIG_ALARMA = "config_alarma.json"
+ARCHIVO_CONFIG_SERIAL = get_persistent_data_path("config_serial.json") # MODIFICADO
+ARCHIVO_CONFIG_ALARMA = get_persistent_data_path("config_alarma.json") # MODIFICADO
 
 # Variables globales
 valores_alarma = {
@@ -581,8 +610,9 @@ def convertir_coord(coord_str, direccion, is_longitude=False):
 def parse_gll(sentence):
     global ultima_vez_datos_recibidos
     try:
-        # Verificar que es una sentencia GLL válida
-        if not sentence.startswith('$GPGLL'):
+        # Modificación: Aceptar $GPGLL, $GNGLL, u otros comunes para GLL
+        if not (sentence.startswith('$GPGLL') or sentence.startswith('$GNGLL') or \
+                sentence.startswith('$GAGLL') or sentence.startswith('$GLGLL')): # Añadir otros si es necesario
             return
             
         parts = sentence.split(',')
@@ -591,14 +621,21 @@ def parse_gll(sentence):
         if len(parts) < 7:
             return
             
-        # Verificar que los datos son válidos (campo 6 == 'A')
-        if parts[6] != 'A' or not parts[1] or not parts[3]:
+        # Extraer el estado del campo parts[6]
+        status_field = parts[6] 
+        if not status_field: # Si el campo de estado está vacío
+            return
+
+        actual_status = status_field[0] # El estado es el primer carácter
+
+        # Verificar que los datos son válidos (estado == 'A') y que los campos de lat/lon no están vacíos
+        if actual_status != 'A' or not parts[1] or not parts[3]:
             return
             
-        lat_raw_val = parts[1]  # ¡OJO! El índice era incorrecto en tu código
-        lat_dir = parts[2]      # parts[2] es la dirección, no parts[3]
-        lon_raw_val = parts[3]  # parts[3] es longitud, no parts[4]
-        lon_dir = parts[4]      # parts[4] es dirección, no parts[5]
+        lat_raw_val = parts[1]
+        lat_dir = parts[2]
+        lon_raw_val = parts[3]
+        lon_dir = parts[4]
         
         global latitude_str, longitude_str, ts_lat_decimal, ts_lon_decimal
         latitude_str_temp, longitude_str_temp = "N/A", "N/A"

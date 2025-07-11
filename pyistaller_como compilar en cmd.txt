@@ -1,0 +1,55 @@
+pyinstaller --name clinometro --onefile --windowed \
+--add-data "mar.jpg:." \
+--add-data "pitch.png:." \
+--add-data "roll.png:." \
+--add-data "alarma_babor.mp3:." \
+--add-data "alarma_encabuzado.mp3:." \
+--add-data "alarma_estribor.mp3:." \
+--add-data "alarma_sentado.mp3:." \
+--add-data "head_alarm.mp3:." \
+--add-data "port_alarm.mp3:." \
+--add-data "starboard_alarm.mp3:." \
+--add-data "stern_alarm.mp3:." \
+--add-data "license.json:." \
+clinometro.py
+
+
+usando dos  :
+
+pyinstaller --name clinometro --onefile --windowed --add-data "mar.jpg:." --add-data "pitch.png:." --add-data "roll.png:." --add-data "alarma_babor.mp3:." --add-data "alarma_encabuzado.mp3:." --add-data "alarma_estribor.mp3:." --add-data "alarma_sentado.mp3:." --add-data "head_alarm.mp3:." --add-data "port_alarm.mp3:." --add-data "starboard_alarm.mp3:." --add-data "stern_alarm.mp3:." --add-data "license.json:." clinometro.py
+
+
+
+usando powershell :
+
+pyinstaller --name clinometro --onefile --windowed `
+--add-data "mar.jpg:." `
+--add-data "pitch.png:." `
+--add-data "roll.png:." `
+--add-data "alarma_babor.mp3:." `
+--add-data "alarma_encabuzado.mp3:." `
+--add-data "alarma_estribor.mp3:." `
+--add-data "alarma_sentado.mp3:." `
+--add-data "head_alarm.mp3:." `
+--add-data "port_alarm.mp3:." `
+--add-data "starboard_alarm.mp3:." `
+--add-data "stern_alarm.mp3:." `
+--add-data "license.json:." `
+clinometro.py
+
+cmd o dos  :
+
+pyinstaller --name clinometro --onefile --windowed ^
+--add-data "mar.jpg:." ^
+--add-data "pitch.png:." ^
+--add-data "roll.png:." ^
+--add-data "alarma_babor.mp3:." ^
+--add-data "alarma_encabuzado.mp3:." ^
+--add-data "alarma_estribor.mp3:." ^
+--add-data "alarma_sentado.mp3:." ^
+--add-data "head_alarm.mp3:." ^
+--add-data "port_alarm.mp3:." ^
+--add-data "starboard_alarm.mp3:." ^
+--add-data "stern_alarm.mp3:." ^
+clinometro.py
+
