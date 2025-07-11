@@ -1,0 +1,17 @@
+He creado un archivo llamado iniciar_lalito_auto.bat en el directorio de la aplicación.
+ Este archivo puede usarse para iniciar "Lalito Clinómetro" automáticamente cuando Windows arranca.
+
+Para configurar el inicio automático, sigue estos pasos:
+
+Abre el Explorador de Archivos.
+En la barra de direcciones, escribe shell:startup y presiona Enter. Esto abrirá la carpeta de Inicio de Windows.
+Vuelve al directorio donde se encuentra clinometro.py y iniciar_lalito_auto.bat.
+Copia el archivo iniciar_lalito_auto.bat.
+Pega el archivo copiado (o un acceso directo a él) dentro de la carpeta de Inicio que abriste en el paso 2.
+La próxima vez que inicies Windows, la aplicación debería arrancar automáticamente.
+
+Nota: Este método asume que Python está agregado al PATH del sistema y que el script clinometro.py 
+se ejecuta con el comando python clinometro.py.
+ Si has compilado la aplicación a un archivo .exe, 
+el contenido del archivo .bat debería modificarse para ejecutar el .exe directamente 
+(por ejemplo, nombre_del_ejecutable.exe en lugar de python clinometro.py).
