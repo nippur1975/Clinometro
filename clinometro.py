@@ -11,6 +11,9 @@ import csv
 from datetime import datetime, timedelta, timezone
 import time
 import sys # Necesario para sys._MEIPASS
+from pystray import MenuItem as item
+import pystray
+from PIL import Image
 
 
 
@@ -1438,6 +1441,7 @@ def main():
     global input_servicio_activo # Para config servicio datos
     global ACTIVATED_SUCCESSFULLY
     global datos_consola_buffer # Para acceder al buffer de la consola
+    global app_running, dimensiones # Necesario para el bucle principal y restauración
     
     # Inicializar Pygame Temprano para Ventana de Activación (si es necesario)
     pygame.init() # Asegurar que Pygame esté inicializado
@@ -1791,10 +1795,31 @@ def main():
     MAX_LINEAS_CONSOLA = 100 # Número máximo de líneas a mantener en el buffer
     
     # Bucle principal
-    hecho = False
+    # hecho = False # Reemplazado por app_running
     nmea_data_stale = False
     
-    while not hecho:
+    while app_running: # Usar la variable global app_running
+        # Verificar si la ventana de Pygame está activa para procesar eventos y dibujar
+        # Esto es crucial si la ventana de Pygame fue cerrada por pygame.display.quit()
+        # y luego restaurada.
+        if not pygame.display.get_active():
+            # Si la ventana no está activa (minimizada a la bandeja),
+            # solo esperamos un poco y continuamos el bucle.
+            # El bucle de pystray se ejecuta en hide_window().
+            # Si show_window() fue llamado, pygame.display.get_active() debería ser True.
+            pygame.time.wait(100) # Esperar para no consumir CPU innecesariamente
+            # Procesar eventos de Pygame aquí podría no ser necesario o incluso problemático
+            # si la ventana no está visible. Considerar si se necesita algún manejo de eventos
+            # mínimo (como QUIT para asegurar cierre).
+            for evento in pygame.event.get(): # Aún procesar QUIT para seguridad
+                if evento.type == pygame.QUIT:
+                    # Si se recibe QUIT mientras la ventana está "oculta" (p.ej., por un error
+                    # o un intento de cierre externo), llamar a nuestra función de cierre.
+                    hide_window() # Esto iniciará el icono de bandeja o manejará el cierre.
+                    # app_running se pondrá False por quit_app si se selecciona "Salir" en la bandeja.
+            continue
+
+
         mouse_pos = pygame.mouse.get_pos()
         
         # Verificar si el mouse está sobre la barra de herramientas
@@ -1815,7 +1840,13 @@ def main():
         # Manejo de eventos
         for evento in pygame.event.get():
             if evento.type == pygame.QUIT:
-                hecho = True
+                # En lugar de hecho = True, llamamos a hide_window()
+                hide_window() 
+                # app_running se manejará dentro de las funciones de pystray
+                # Si hide_window() retorna (porque el icono de bandeja se cerró),
+                # app_running podría seguir siendo True si se restauró la ventana,
+                # o False si se seleccionó "Salir".
+                # El bucle while app_running se encargará del resto.
             
             if evento.type == pygame.MOUSEBUTTONDOWN:
                 if evento.button == 1:  # Clic izquierdo
@@ -3348,6 +3379,50 @@ def main():
         if ser.is_open:
             ser.close()
     pygame.quit()
+
+# Globales para el icono de la bandeja
+tray_icon = None
+app_running = True
+
+# --- Funciones para el icono de la bandeja del sistema ---
+def quit_app(icon, _item):
+    global app_running, tray_icon
+    app_running = False
+    if tray_icon:
+        tray_icon.stop()
+    pygame.quit()
+    sys.exit()
+
+def show_window(_icon, _item):
+    global tray_icon
+    if tray_icon:
+        tray_icon.stop()
+    pygame.display.set_mode(dimensiones) # Restaurar la ventana de Pygame
+
+def hide_window():
+    global tray_icon, dimensiones
+    pygame.display.iconify() # Intenta minimizar la ventana primero
+    pygame.display.quit() # Oculta la ventana principal de Pygame
+    # Es importante re-inicializar el display mode al restaurar si se usa pygame.display.quit()
+    # o simplemente no llamar a quit() y solo iconify() si es suficiente.
+    # Para pystray, es mejor que la ventana de pygame no esté activa.
+
+    image_path = resource_path("barco.png")
+    try:
+        image = Image.open(image_path)
+    except FileNotFoundError:
+        print(f"Error: No se encontró el archivo de icono en {image_path}")
+        # Podríamos usar un icono por defecto o simplemente no mostrar el icono si falla.
+        # Por ahora, si no se encuentra, no se crea el icono.
+        return
+    except Exception as e:
+        print(f"Error al cargar la imagen del icono: {e}")
+        return
+
+    menu = (item('Mostrar', show_window, default=True), item('Salir', quit_app))
+    tray_icon = pystray.Icon("Lalito", image, "Lalito Clinómetro", menu)
+    tray_icon.run()
+
 
 # --- Nueva función para dibujar la ventana de la consola ---
 def draw_console_window(screen, font_console, buffer_datos):
