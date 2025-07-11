@@ -248,6 +248,7 @@ TEXTOS = {
         "velocidad": "VELOCIDAD",
         "pitch": "PITCH",
         "roll": "ROLL ",
+        "altitud": "ALTITUD", # Nueva entrada
         "no_datos": "NO HAY DATOS NMEA",
         "desconectado": "Puerto NMEA desconectado",
         "titulo_config": "Configuración Puerto",
@@ -288,6 +289,7 @@ TEXTOS = {
         "velocidad": "SPEED     ",
         "pitch": "PITCH",
         "roll": "ROLL ",
+        "altitud": "ALTITUDE", # Nueva entrada
         "no_datos": "NO NMEA DATA",
         "desconectado": "NMEA port disconnected",
         "titulo_config": "Serial Settings",
@@ -372,6 +374,8 @@ ts_lon_decimal = 0.0
 ts_speed_float = 0.0
 ts_heading_float = 0.0
 ts_timestamp_str = "N/A"
+altitude_str = "N/A" # Nueva variable para altitud
+ts_altitude_float = 0.0 # Nueva variable para altitud numérica para ThingSpeak
 ultima_vez_envio_datos = 0
 
 # Variables de estado de alarmas
@@ -684,15 +688,34 @@ def parse_gll(sentence):
     
 
 def parse_gga(sentence):
-    global ultima_vez_datos_recibidos
+    global ultima_vez_datos_recibidos, altitude_str, ts_altitude_float # Añadir ts_altitude_float
     try:
         parts = sentence.split(',')
-        if len(parts) > 5 and parts[2] and parts[3] and parts[4] and parts[5]:
+        # GGA tiene al menos 15 campos si está completo con checksum
+        # parts[9] es altitud, parts[10] es unidad (M)
+        # Necesitamos asegurar que parts[9] y parts[10] existan y parts[9] no esté vacío.
+        if len(parts) > 10 and parts[9]: # Verificar que el campo de altitud y su unidad existan
             lat_raw_val = parts[2]
             lat_dir = parts[3]
             lon_raw_val = parts[4]
             lon_dir = parts[5]
             
+            # Procesar Altitud
+            alt_val_str = parts[9]
+            alt_unit_str = parts[10] if parts[10] else "M" # Asumir Metros si la unidad está vacía pero el valor existe
+
+            if alt_val_str: # Si hay un valor de altitud
+                try:
+                    ts_altitude_float = float(alt_val_str) # Convertir a float para ThingSpeak
+                    altitude_str = f"{alt_val_str} {alt_unit_str}"
+                    ultima_vez_datos_recibidos = pygame.time.get_ticks() # Actualizar si obtenemos altitud
+                except ValueError:
+                    altitude_str = "N/A"
+                    ts_altitude_float = 0.0 # Valor por defecto si no es un número válido
+            else:
+                altitude_str = "N/A"
+                ts_altitude_float = 0.0
+
             global latitude_str, longitude_str, ts_lat_decimal, ts_lon_decimal
             latitude_str_temp, longitude_str_temp = "N/A", "N/A"
             ts_lat_decimal_temp, ts_lon_decimal_temp = 0.0, 0.0
@@ -878,9 +901,9 @@ def parse_gpzda(sentence):
 
 def reset_ui_data():
     global latitude_str, longitude_str, speed_str, heading_str
-    global att_pitch_str, att_roll_str, att_heading_str
+    global att_pitch_str, att_roll_str, att_heading_str, altitude_str
     global ts_pitch_float, ts_roll_float, ts_lat_decimal, ts_lon_decimal
-    global ts_speed_float, ts_heading_float, ts_timestamp_str
+    global ts_speed_float, ts_heading_float, ts_timestamp_str, ts_altitude_float # Añadir ts_altitude_float
     global alarma_roll_babor_activa, alarma_roll_estribor_activa
     global alarma_pitch_sentado_activa, alarma_pitch_encabuzado_activa
     global ultima_reproduccion_alarma_babor_tiempo, ultima_reproduccion_alarma_estribor_tiempo
@@ -894,6 +917,7 @@ def reset_ui_data():
     att_pitch_str = "N/A"
     att_roll_str = "N/A"
     att_heading_str = "N/A"
+    altitude_str = "N/A" # Resetear altitude_str
     
     ts_pitch_float = 0.0
     ts_roll_float = 0.0
@@ -902,6 +926,7 @@ def reset_ui_data():
     ts_speed_float = 0.0
     ts_heading_float = 0.0
     ts_timestamp_str = "N/A"
+    ts_altitude_float = 0.0 # Resetear ts_altitude_float
 
     # Resetear estados de alarma
     alarma_roll_babor_activa = False
@@ -1021,25 +1046,18 @@ def enviar_thingspeak():
         'field4': ts_lon_decimal, 
         'field5': ts_speed_float, 
         'field6': ts_heading_float, 
-        'field7': ts_timestamp_str
+        'field7': ts_timestamp_str,
+        'field8': ts_altitude_float # Altitud en field8
     }
     
-    estado_alarma = "SIN ALARMA"
-    if alarma_roll_babor_activa:
-        estado_alarma = "ALARMA BABOR"
-    elif alarma_roll_estribor_activa:
-        estado_alarma = "ALARMA ESTRIBOR"
-    if alarma_pitch_sentado_activa:
-        estado_alarma += " Y SENTADO" if "ALARMA" in estado_alarma else "ALARMA SENTADO"
-    elif alarma_pitch_encabuzado_activa:
-        estado_alarma += " Y ENCABUZADO" if "ALARMA" in estado_alarma else "ALARMA ENCABUZADO"
-    
-    payload['field8'] = estado_alarma
+    # El estado de alarma ya no se envía a field8.
+    # Si se quisiera conservar, se necesitaría un field9 y ajustar el payload.
+    # Por ahora, se omite según la confirmación del usuario.
     
     try:
         r = requests.get(THINGSPEAK_URL, params=payload) 
         if r.status_code == 200: 
-            msg_ts = f"ThingSpeak OK: {ts_timestamp_str}"
+            msg_ts = f"ThingSpeak OK: {ts_timestamp_str} (Alt: {ts_altitude_float})"
             print(f"[OK] {msg_ts}")
             agregar_a_consola(msg_ts)
         else: 
@@ -1403,8 +1421,8 @@ def main():
     global ultima_reproduccion_alarma_estribor_tiempo, ultima_reproduccion_alarma_sentado_tiempo
     global ultima_reproduccion_alarma_encabuzado_tiempo, ultima_vez_envio_datos
     global ultimo_intento_reconeccion_tiempo # Declaración global añadida
-    global latitude_str, longitude_str, speed_str, heading_str, att_heading_str, att_pitch_str, att_roll_str
-    global ts_pitch_float, ts_roll_float, ts_lat_decimal, ts_lon_decimal, ts_speed_float, ts_heading_float, ts_timestamp_str
+    global latitude_str, longitude_str, speed_str, heading_str, att_heading_str, att_pitch_str, att_roll_str, altitude_str
+    global ts_pitch_float, ts_roll_float, ts_lat_decimal, ts_lon_decimal, ts_speed_float, ts_heading_float, ts_timestamp_str, ts_altitude_float # Añadir ts_altitude_float
     global datos_consola_buffer, MAX_LINEAS_CONSOLA # Para la consola de datos
     global alarma_roll_babor_activa, alarma_roll_estribor_activa, alarma_pitch_sentado_activa, alarma_pitch_encabuzado_activa
     global ser, serial_port_available, ultima_vez_datos_recibidos, nmea_data_stale
@@ -1423,7 +1441,7 @@ def main():
     
     # Inicializar Pygame Temprano para Ventana de Activación (si es necesario)
     pygame.init() # Asegurar que Pygame esté inicializado
-    dimensiones = [1060, 430] # Definir dimensiones antes para la ventana de activación
+    dimensiones = [1060, 500] # Altura aumentada de 430 a 500
     screen = pygame.display.set_mode(dimensiones) # Crear la pantalla
     pygame.display.set_caption("Clinómetro") # Título genérico inicial
 
@@ -2691,6 +2709,48 @@ def main():
             )
             screen.blit(roll_direccion_surf, roll_direccion_rect)
         
+        # Dibujar la nueva caja de Altitud debajo de los círculos
+        # (Asegurarse de que se dibuje antes de los mensajes de estado para que no los tape)
+        altura_caja_altitud = 60 # Altura para la caja de altitud
+        ancho_caja_altitud = (radio_circulo_img * 2) * 2 + 50 # Ancho similar a los dos círculos juntos
+
+        # Calcular X para centrar la caja en el area_izquierda_rect
+        # area_izquierda_rect.width es nuevo_ancho_area_izquierda = 750
+        # centro_x_circulo1 y centro_x_circulo2 definen la extensión de los círculos
+        # Podríamos centrarla entre centro_x_circulo1 - radio_circulo_img y centro_x_circulo2 + radio_circulo_img
+        ancho_original_caja_altitud = (centro_x_circulo2 + radio_circulo_img) - (centro_x_circulo1 - radio_circulo_img)
+        ancho_caja_altitud = ancho_original_caja_altitud / 2
+
+        # Calcular el centro del espacio disponible para la caja original
+        centro_x_disponible = (centro_x_circulo1 - radio_circulo_img) + (ancho_original_caja_altitud / 2)
+
+        # Calcular el nuevo x_inicio para centrar la caja reducida
+        x_inicio_caja_altitud = centro_x_disponible - (ancho_caja_altitud / 2)
+
+        y_caja_altitud = centro_y_circulos + radio_circulo_img + 20 # 20px de margen debajo de los círculos
+
+        dim_caja_altitud = [x_inicio_caja_altitud, y_caja_altitud, ancho_caja_altitud, altura_caja_altitud]
+
+        pygame.draw.rect(screen, COLOR_CAJA_DATOS_FONDO, dim_caja_altitud)
+        pygame.draw.rect(screen, COLOR_CAJA_DATOS_BORDE, dim_caja_altitud, 1)
+
+        # Título para la caja de altitud
+        texto_titulo_altitud_str = TEXTOS[IDIOMA].get("altitud", "ALTITUD") # Usar .get con fallback
+        text_surface_titulo_altitud = font.render(texto_titulo_altitud_str, True, COLOR_CAJA_DATOS_TEXTO)
+        text_rect_titulo_altitud = text_surface_titulo_altitud.get_rect(
+            centerx=dim_caja_altitud[0] + dim_caja_altitud[2] // 2,
+            top=dim_caja_altitud[1] + 5 # Pequeño padding superior para el título
+        )
+        screen.blit(text_surface_titulo_altitud, text_rect_titulo_altitud)
+
+        # Valor de la altitud
+        text_surface_altitud_data = font_datos_grandes.render(altitude_str, True, COLOR_CAJA_DATOS_TEXTO)
+        text_rect_altitud_data = text_surface_altitud_data.get_rect(
+            centerx=dim_caja_altitud[0] + dim_caja_altitud[2] // 2,
+            top=text_rect_titulo_altitud.bottom + 2 # Debajo del título
+        )
+        screen.blit(text_surface_altitud_data, text_rect_altitud_data)
+
         # Mostrar mensajes de estado (NO HAY DATOS / DESCONECTADO)
         # Estos mensajes deben aparecer encima de los círculos si están activos
         if serial_port_available and ser and ser.is_open:
