@@ -1149,6 +1149,17 @@ def enviar_thingspeak():
         print("INFO: Modo trial expirado. Envío a ThingSpeak deshabilitado.")
         return
 
+    estado_alarma_para_thingspeak = "SIN ALARMA"
+    if alarma_roll_babor_activa:
+        estado_alarma_para_thingspeak = "ALARMA BABOR"
+    elif alarma_roll_estribor_activa:
+        estado_alarma_para_thingspeak = "ALARMA ESTRIBOR"
+
+    if alarma_pitch_sentado_activa:
+        estado_alarma_para_thingspeak += " Y SENTADO" if "ALARMA" in estado_alarma_para_thingspeak else "ALARMA SENTADO"
+    elif alarma_pitch_encabuzado_activa:
+        estado_alarma_para_thingspeak += " Y ENCABUZADO" if "ALARMA" in estado_alarma_para_thingspeak else "ALARMA ENCABUZADO"
+
     payload = {
         'api_key': API_KEY_THINGSPEAK, 
         'field1': ts_pitch_float, 
@@ -1157,18 +1168,14 @@ def enviar_thingspeak():
         'field4': ts_lon_decimal, 
         'field5': ts_speed_float, 
         'field6': ts_heading_float, 
-        'field7': ts_timestamp_str,
-        'field8': ts_altitude_float # Altitud en field8
+        'field7': ts_altitude_float,
+        'field8': estado_alarma_para_thingspeak
     }
-    
-    # El estado de alarma ya no se envía a field8.
-    # Si se quisiera conservar, se necesitaría un field9 y ajustar el payload.
-    # Por ahora, se omite según la confirmación del usuario.
     
     try:
         r = requests.get(THINGSPEAK_URL, params=payload) 
         if r.status_code == 200: 
-            msg_ts = f"ThingSpeak OK: {ts_timestamp_str} (Alt: {ts_altitude_float})"
+            msg_ts = f"ThingSpeak OK: {ts_timestamp_str}"
             print(f"[OK] {msg_ts}")
             agregar_a_consola(msg_ts)
         else: 
@@ -1940,7 +1947,9 @@ def main():
     tray_thread.start()
     
     while running:
-        if window_visible:
+        if not window_visible:
+            pygame.display.iconify()
+        else:
             try:
                 screen.get_height()
             except pygame.error:
@@ -1948,50 +1957,64 @@ def main():
                 dimensiones = [1060, 500]
                 screen = pygame.display.set_mode(dimensiones)
                 pygame.display.set_caption(TEXTOS[IDIOMA]["titulo_ventana"])
-        else:
-            pygame.display.quit()
-            # Core logic loop
-            while not window_visible and running:
-                if serial_port_available and ser and ser.is_open:
-                    try:
-                        if ser.in_waiting > 0:
-                            line = ser.readline().decode('ascii', errors='replace').strip()
-                            if line.startswith('$GPGLL') or line.startswith('$GNGLL'):
-                                parse_gll(line)
-                            elif line.startswith('$GPGGA') or line.startswith('$GNGGA'):
-                                parse_gga(line)
-                            elif line.startswith('$GPRMC') or line.startswith('$GNRMC'):
-                                parse_rmc(line)
-                            elif line.startswith('$GPVTG') or line.startswith('$GNVTG'):
-                                parse_vtg(line)
-                            elif line.startswith('$GPHDT') or line.startswith('$GNHDT'):
-                                parse_hdt(line)
-                            elif line.startswith('$GPHDG') or line.startswith('$GNHDG'):
-                                parse_hdg(line)
-                            elif line.startswith('$PFEC,GPatt'):
-                                parse_pfec_gpatt(line)
-                            elif line.startswith('$GPZDA') or line.startswith('$GNZDA'):
-                                parse_gpzda(line)
-                    except serial.SerialException as se:
-                        print(f"SerialException durante lectura: {se}. Marcando puerto como desconectado.")
-                        if ser:
-                            ser.close()
-                        ser = None
-                        serial_port_available = False
-                        reset_ui_data()
-                    except Exception as e:
-                        pass
-                
-                if time.time() - ultima_vez_envio_datos >= INTERVALO_ENVIO_DATOS_S:
-                    if serial_port_available:
-                        guardar_csv()
-                        enviar_thingspeak()
-                    ultima_vez_envio_datos = time.time()
-                
-                pygame.time.delay(100)
-            continue
 
-        mouse_pos = pygame.mouse.get_pos()
+        # Procesamiento de datos en segundo plano (se ejecuta siempre)
+        if serial_port_available and ser and ser.is_open:
+            try:
+                if ser.in_waiting > 0:
+                    line = ser.readline().decode('ascii', errors='replace').strip()
+                    if line.startswith('$GPGLL') or line.startswith('$GNGLL'):
+                        parse_gll(line)
+                    elif line.startswith('$GPGGA') or line.startswith('$GNGGA'):
+                        parse_gga(line)
+                    elif line.startswith('$GPRMC') or line.startswith('$GNRMC'):
+                        parse_rmc(line)
+                    elif line.startswith('$GPVTG') or line.startswith('$GNVTG'):
+                        parse_vtg(line)
+                    elif line.startswith('$GPHDT') or line.startswith('$GNHDT'):
+                        parse_hdt(line)
+                    elif line.startswith('$GPHDG') or line.startswith('$GNHDG'):
+                        parse_hdg(line)
+                    elif line.startswith('$PFEC,GPatt'):
+                        parse_pfec_gpatt(line)
+                    elif line.startswith('$GPZDA') or line.startswith('$GNZDA'):
+                        parse_gpzda(line)
+            except serial.SerialException as se:
+                print(f"SerialException durante lectura: {se}. Marcando puerto como desconectado.")
+                if ser:
+                    ser.close()
+                ser = None
+                serial_port_available = False
+                reset_ui_data()
+            except Exception as e:
+                pass
+
+        if time.time() - ultima_vez_envio_datos >= INTERVALO_ENVIO_DATOS_S:
+            if serial_port_available:
+                estado_alarma_para_print = "SIN ALARMA"
+                if alarma_roll_babor_activa:
+                    estado_alarma_para_print = "ALARMA BABOR"
+                elif alarma_roll_estribor_activa:
+                    estado_alarma_para_print = "ALARMA ESTRIBOR"
+
+                if alarma_pitch_sentado_activa:
+                    estado_alarma_para_print += " Y SENTADO" if "ALARMA" in estado_alarma_para_print else "ALARMA SENTADO"
+                elif alarma_pitch_encabuzado_activa:
+                    estado_alarma_para_print += " Y ENCABUZADO" if "ALARMA" in estado_alarma_para_print else "ALARMA ENCABUZADO"
+                
+                if not window_visible:
+                    print("--- Background processing ---")
+                    print(f"Valores: P:{ts_pitch_float}, R:{ts_roll_float}, Lat:{ts_lat_decimal}, Lon:{ts_lon_decimal}, Spd:{ts_speed_float}, Hdg:{ts_heading_float}, Alt:{ts_altitude_float}, Alarma: {estado_alarma_para_print}")
+                
+                guardar_csv()
+                enviar_thingspeak()
+            ultima_vez_envio_datos = time.time()
+
+        if not window_visible:
+            pygame.time.delay(100)
+
+        if window_visible:
+            mouse_pos = pygame.mouse.get_pos()
         
         # Verificar si el mouse está sobre la barra de herramientas
         toolbar_visible = rect_barra_herramientas.collidepoint(mouse_pos)
@@ -2428,7 +2451,7 @@ def main():
                     estado_alarma_para_print += " Y ENCABUZADO" if "ALARMA" in estado_alarma_para_print else "ALARMA ENCABUZADO"
                 
                 print(f"--- Guardando y Enviando Datos ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---")
-                print(f"Valores: P:{ts_pitch_float}, R:{ts_roll_float}, Lat:{ts_lat_decimal}, Lon:{ts_lon_decimal}, Spd:{ts_speed_float}, Hdg:{ts_heading_float}, TS:{ts_timestamp_str}, Alarma: {estado_alarma_para_print}")
+                print(f"Valores: P:{ts_pitch_float}, R:{ts_roll_float}, Lat:{ts_lat_decimal}, Lon:{ts_lon_decimal}, Spd:{ts_speed_float}, Hdg:{ts_heading_float}, Alt:{ts_altitude_float}, Alarma: {estado_alarma_para_print}")
                 agregar_a_consola(f"Datos: P:{ts_pitch_float:.1f}, R:{ts_roll_float:.1f}, Lat:{ts_lat_decimal:.4f}, Lon:{ts_lon_decimal:.4f}, Spd:{ts_speed_float:.1f}, Hdg:{ts_heading_float:.0f}, Alarma: {estado_alarma_para_print}")
                 
                 guardar_csv()
@@ -3547,45 +3570,6 @@ def main():
             ser.close()
     pygame.quit()
 
-    
-            # Lógica principal sin UI
-    if serial_port_available and ser and ser.is_open:
-                try:
-                    if ser.in_waiting > 0:
-                        line = ser.readline().decode('ascii', errors='replace').strip()
-                        if line.startswith('$GPGLL') or line.startswith('$GNGLL'):
-                            parse_gll(line)
-                        elif line.startswith('$GPGGA') or line.startswith('$GNGGA'):
-                            parse_gga(line)
-                        elif line.startswith('$GPRMC') or line.startswith('$GNRMC'):
-                            parse_rmc(line)
-                        elif line.startswith('$GPVTG') or line.startswith('$GNVTG'):
-                            parse_vtg(line)
-                        elif line.startswith('$GPHDT') or line.startswith('$GNHDT'):
-                            parse_hdt(line)
-                        elif line.startswith('$GPHDG') or line.startswith('$GNHDG'):
-                            parse_hdg(line)
-                        elif line.startswith('$PFEC,GPatt'):
-                            parse_pfec_gpatt(line)
-                        elif line.startswith('$GPZDA') or line.startswith('$GNZDA'):
-                            parse_gpzda(line)
-                except serial.SerialException as se:
-                    print(f"SerialException durante lectura: {se}. Marcando puerto como desconectado.")
-                    if ser:
-                        ser.close()
-                    ser = None
-                    serial_port_available = False
-                    reset_ui_data()
-                except Exception as e:
-                    pass
-            
-    if time.time() - ultima_vez_envio_datos >= INTERVALO_ENVIO_DATOS_S:
-                if serial_port_available:
-                    guardar_csv()
-                    enviar_thingspeak()
-                ultima_vez_envio_datos = time.time()
-            
-    pygame.time.delay(100)
 
 # --- Nueva función para dibujar la ventana de la consola ---
 def draw_console_window(screen, font_console, buffer_datos):
