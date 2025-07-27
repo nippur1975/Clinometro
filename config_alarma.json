@@ -1,0 +1,6 @@
+{
+    "max_pitch_pos": "10",
+    "min_pitch_neg": "-10",
+    "max_roll_pos": "15",
+    "min_roll_neg": "-15"
+}

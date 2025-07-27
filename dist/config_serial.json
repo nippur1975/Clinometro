@@ -1,0 +1,8 @@
+{
+    "puerto": "COM13",
+    "baudios": 9600,
+    "idioma": "es",
+    "servicio_datos": "thingspeak",
+    "api_key_thingspeak": "KYI6WHRWN642JD7L",
+    "api_key_google_cloud": ""
+}
