@@ -15,6 +15,51 @@ import pystray
 import time
 import sys # Necesario para sys._MEIPASS
 
+# --- Funciones para el inicio automático en Windows ---
+try:
+    import winreg
+    IS_WINDOWS = True
+except ImportError:
+    IS_WINDOWS = False
+
+def is_registered_for_startup():
+    """Verifica si ya está registrado en el inicio de Windows."""
+    if not IS_WINDOWS:
+        return True # Asumir como "registrado" en sistemas no-Windows para no hacer nada.
+    try:
+        run_key = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        app_name = "Clinometro"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, run_key, 0, winreg.KEY_READ) as key:
+            # Simplemente verificar si el valor existe. No necesitamos comparar la ruta.
+            winreg.QueryValueEx(key, app_name)
+            return True
+    except FileNotFoundError:
+        return False
+    except Exception as e:
+        print(f"[WARN] Error al verificar registro de inicio: {e}")
+        return False # Asumir que no está registrado si hay un error.
+
+def add_to_startup():
+    """Registra el programa para que se ejecute al inicio."""
+    if not IS_WINDOWS or not getattr(sys, 'frozen', False):
+        # No hacer nada si no es Windows o no está compilado (ejecutable).
+        return
+
+    try:
+        exe_path = sys.executable
+        run_key = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        app_name = "Clinometro"
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, run_key, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, f'"{exe_path}"') # Añadir comillas por si la ruta tiene espacios
+        print(f"[INFO] {app_name} agregado al inicio de Windows.")
+    except Exception as e:
+        print(f"[ERROR] No se pudo agregar al inicio: {e}")
+
+# --- Registro automático (solo si no estaba antes) ---
+if IS_WINDOWS and getattr(sys, 'frozen', False) and not is_registered_for_startup():
+    add_to_startup()
+
 
 
 # Función para obtener la ruta correcta a los recursos (para PyInstaller)
@@ -460,8 +505,11 @@ INTERVALO_REPETICION_ALARMA_PITCH_S = 5
 
 ARCHIVO_CONFIG_SERIAL = get_persistent_data_path("config_serial.json") # MODIFICADO
 ARCHIVO_CONFIG_ALARMA = get_persistent_data_path("config_alarma.json") # MODIFICADO
+FIRST_RUN_FILE = get_persistent_data_path("first_run.json")
 
 # Variables globales
+network_available = True
+last_network_check_time = 0
 valores_alarma = {
     "max_pitch_pos": "15", 
     "min_pitch_neg": "-15",
@@ -1143,8 +1191,44 @@ def guardar_csv():
 
 
 
+def check_network_connection():
+    """Verifica si hay conexión a internet haciendo una petición a Google."""
+    global network_available
+    try:
+        # Usar un timeout bajo para no bloquear por mucho tiempo
+        requests.get("https://www.google.com", timeout=5)
+        print("INFO: Conexión de red restablecida.")
+        agregar_a_consola("Red restablecida.")
+        network_available = True
+    except requests.exceptions.RequestException:
+        print("INFO: Aún no hay conexión de red.")
+        agregar_a_consola("Sin conexión de red.")
+        network_available = False
+
+def worker_enviar_thingspeak(payload):
+    """Esta función se ejecuta en un hilo separado para no bloquear la UI."""
+    global network_available
+    try:
+        r = requests.get(THINGSPEAK_URL, params=payload, timeout=10) 
+        if r.status_code == 200: 
+            # El timestamp puede no ser el actual, pero es una buena aproximación.
+            msg_ts = f"ThingSpeak OK (desde hilo)"
+            print(f"[OK] {msg_ts}")
+            agregar_a_consola(msg_ts)
+            network_available = True # Si tiene éxito, la red está disponible
+        else: 
+            msg_ts_err = f"ThingSpeak ERR: {r.status_code} - {r.text}"
+            print(f"[ERROR] {msg_ts_err}")
+            agregar_a_consola(msg_ts_err)
+            # No asumimos pérdida de red por errores de la API, solo por excepciones de conexión
+    except requests.exceptions.RequestException as e: 
+        msg_ts_conn_err = f"ThingSpeak Conn. ERR: {e}"
+        print(f"[ERROR] {msg_ts_conn_err}")
+        agregar_a_consola(f"Sin red: {e}")
+        network_available = False
+
 def enviar_thingspeak():
-    global PROGRAM_MODE # Necesitamos acceder al estado global
+    global PROGRAM_MODE
     if PROGRAM_MODE == "TRIAL_EXPIRED":
         print("INFO: Modo trial expirado. Envío a ThingSpeak deshabilitado.")
         return
@@ -1172,20 +1256,10 @@ def enviar_thingspeak():
         'field8': estado_alarma_para_thingspeak
     }
     
-    try:
-        r = requests.get(THINGSPEAK_URL, params=payload) 
-        if r.status_code == 200: 
-            msg_ts = f"ThingSpeak OK: {ts_timestamp_str}"
-            print(f"[OK] {msg_ts}")
-            agregar_a_consola(msg_ts)
-        else: 
-            msg_ts_err = f"ThingSpeak ERR: {r.status_code} - {r.text}"
-            print(f"[ERROR] {msg_ts_err}")
-            agregar_a_consola(msg_ts_err)
-    except Exception as e: 
-        msg_ts_conn_err = f"ThingSpeak Conn. ERR: {e}"
-        print(f"[ERROR] {msg_ts_conn_err}")
-        agregar_a_consola(msg_ts_conn_err)
+    # Crear y lanzar el hilo
+    thread = threading.Thread(target=worker_enviar_thingspeak, args=(payload,))
+    thread.daemon = True # El hilo no impedirá que el programa se cierre
+    thread.start()
 
 def draw_activation_window(screen, display_id_str, input_key_str, error_message=None, input_active: bool = False, show_cursor: bool = False):
     """Dibuja la ventana de activación de licencia."""
@@ -1566,7 +1640,7 @@ def main():
     global INDICE_PROXIMA_ALARMA_A_SONAR, ultima_reproduccion_alarma_babor_tiempo
     global ultima_reproduccion_alarma_estribor_tiempo, ultima_reproduccion_alarma_sentado_tiempo
     global ultima_reproduccion_alarma_encabuzado_tiempo, ultima_vez_envio_datos
-    global ultimo_intento_reconeccion_tiempo # Declaración global añadida
+    global ultimo_intento_reconeccion_tiempo, network_available, last_network_check_time
     global latitude_str, longitude_str, speed_str, heading_str, att_heading_str, att_pitch_str, att_roll_str, altitude_str
     global ts_pitch_float, ts_roll_float, ts_lat_decimal, ts_lon_decimal, ts_speed_float, ts_heading_float, ts_timestamp_str, ts_altitude_float # Añadir ts_altitude_float
     global datos_consola_buffer, MAX_LINEAS_CONSOLA # Para la consola de datos
@@ -1933,13 +2007,33 @@ def main():
     mostrar_ventana_consola_datos = False # Controla la visibilidad
     rect_ventana_consola_datos = None # Se definirá en el bucle si es visible
     rect_boton_cerrar_consola_datos = None # Botón 'X' para cerrar
+    rect_boton_copiar_consola = None # Botón 'Copiar'
     datos_consola_buffer = [] # Buffer para almacenar mensajes de la consola
     MAX_LINEAS_CONSOLA = 100 # Número máximo de líneas a mantener en el buffer
+    copy_success_message = None
+    copy_message_timer = 0
+
+
+    # Variables para el cursor parpadeante
+    cursor_visible = True
+    cursor_blink_timer = 0
     
     # Bucle principal
     global running, window_visible
     running = True
-    window_visible = True
+    
+    # Lógica de visibilidad para la primera ejecución
+    is_first_run = not os.path.exists(FIRST_RUN_FILE)
+    if is_first_run:
+        window_visible = True
+        try:
+            with open(FIRST_RUN_FILE, 'w') as f:
+                json.dump({"first_run_completed": True}, f)
+        except IOError as e:
+            print(f"WARN: No se pudo escribir el archivo de primera ejecución: {e}")
+    else:
+        window_visible = False
+        
     nmea_data_stale = False
 
     tray_thread = threading.Thread(target=setup_tray_icon)
@@ -1959,28 +2053,45 @@ def main():
             pygame.display.quit()
             # Core logic loop
             while not window_visible and running:
+                # Lógica de reconexión del puerto serie
+                if not serial_port_available:
+                    ahora = pygame.time.get_ticks()
+                    if ahora - ultimo_intento_reconeccion_tiempo > INTERVALO_RECONECCION_MS:
+                        ultimo_intento_reconeccion_tiempo = ahora
+                        print(f"INFO (oculto): Intentando reconectar al puerto {puerto}...")
+                        try:
+                            if ser is not None:
+                                ser.close()
+                            ser = serial.Serial(puerto, baudios, timeout=1)
+                            serial_port_available = True
+                            nmea_data_stale = False
+                            ultima_vez_datos_recibidos = pygame.time.get_ticks()
+                            print(f"INFO (oculto): Reconexión exitosa al puerto {puerto}.")
+                            agregar_a_consola(f"Reconectado a {puerto}.")
+                        except serial.SerialException:
+                            ser = None
+                            serial_port_available = False
+                        except Exception as e:
+                            print(f"Error inesperado durante reconexión (oculto): {e}")
+                            ser = None
+                            serial_port_available = False
+                    time.sleep(1)
+
+                # Lógica de lectura del puerto serie
                 if serial_port_available and ser and ser.is_open:
                     try:
                         if ser.in_waiting > 0:
                             line = ser.readline().decode('ascii', errors='replace').strip()
-                            if line.startswith('$GPGLL') or line.startswith('$GNGLL'):
-                                parse_gll(line)
-                            elif line.startswith('$GPGGA') or line.startswith('$GNGGA'):
-                                parse_gga(line)
-                            elif line.startswith('$GPRMC') or line.startswith('$GNRMC'):
-                                parse_rmc(line)
-                            elif line.startswith('$GPVTG') or line.startswith('$GNVTG'):
-                                parse_vtg(line)
-                            elif line.startswith('$GPHDT') or line.startswith('$GNHDT'):
-                                parse_hdt(line)
-                            elif line.startswith('$GPHDG') or line.startswith('$GNHDG'):
-                                parse_hdg(line)
-                            elif line.startswith('$PFEC,GPatt'):
-                                parse_pfec_gpatt(line)
-                            elif line.startswith('$GPZDA') or line.startswith('$GNZDA'):
-                                parse_gpzda(line)
+                            if line.startswith('$GPGLL') or line.startswith('$GNGLL'): parse_gll(line)
+                            elif line.startswith('$GPGGA') or line.startswith('$GNGGA'): parse_gga(line)
+                            elif line.startswith('$GPRMC') or line.startswith('$GNRMC'): parse_rmc(line)
+                            elif line.startswith('$GPVTG') or line.startswith('$GNVTG'): parse_vtg(line)
+                            elif line.startswith('$GPHDT') or line.startswith('$GNHDT'): parse_hdt(line)
+                            elif line.startswith('$GPHDG') or line.startswith('$GNHDG'): parse_hdg(line)
+                            elif line.startswith('$PFEC,GPatt'): parse_pfec_gpatt(line)
+                            elif line.startswith('$GPZDA') or line.startswith('$GNZDA'): parse_gpzda(line)
                     except serial.SerialException as se:
-                        print(f"SerialException durante lectura: {se}. Marcando puerto como desconectado.")
+                        print(f"SerialException durante lectura (oculto): {se}. Marcando puerto como desconectado.")
                         if ser:
                             ser.close()
                         ser = None
@@ -1989,22 +2100,30 @@ def main():
                     except Exception as e:
                         pass
                 
+                # Lógica de verificación de red
+                if not network_available:
+                    now = time.time()
+                    if now - last_network_check_time > 60:
+                        print("INFO (oculto): Verificando estado de la red...")
+                        network_check_thread = threading.Thread(target=check_network_connection)
+                        network_check_thread.daemon = True
+                        network_check_thread.start()
+                        last_network_check_time = now
+
+                # Lógica de envío de datos
                 if time.time() - ultima_vez_envio_datos >= INTERVALO_ENVIO_DATOS_S:
-                    if serial_port_available:
+                    if serial_port_available and not nmea_data_stale:
                         estado_alarma_para_print = "SIN ALARMA"
-                        if alarma_roll_babor_activa:
-                            estado_alarma_para_print = "ALARMA BABOR"
-                        elif alarma_roll_estribor_activa:
-                            estado_alarma_para_print = "ALARMA ESTRIBOR"
+                        if alarma_roll_babor_activa: estado_alarma_para_print = "ALARMA BABOR"
+                        elif alarma_roll_estribor_activa: estado_alarma_para_print = "ALARMA ESTRIBOR"
+                        if alarma_pitch_sentado_activa: estado_alarma_para_print += " Y SENTADO" if "ALARMA" in estado_alarma_para_print else "ALARMA SENTADO"
+                        elif alarma_pitch_encabuzado_activa: estado_alarma_para_print += " Y ENCABUZADO" if "ALARMA" in estado_alarma_para_print else "ALARMA ENCABUZADO"
                         
-                        if alarma_pitch_sentado_activa:
-                            estado_alarma_para_print += " Y SENTADO" if "ALARMA" in estado_alarma_para_print else "ALARMA SENTADO"
-                        elif alarma_pitch_encabuzado_activa:
-                            estado_alarma_para_print += " Y ENCABUZADO" if "ALARMA" in estado_alarma_para_print else "ALARMA ENCABUZADO"
                         print("--- Background processing ---")
                         print(f"Valores: P:{ts_pitch_float}, R:{ts_roll_float}, Lat:{ts_lat_decimal}, Lon:{ts_lon_decimal}, Spd:{ts_speed_float}, Hdg:{ts_heading_float}, Alt:{ts_altitude_float}, Alarma: {estado_alarma_para_print}")
                         guardar_csv()
-                        enviar_thingspeak()
+                        if SERVICIO_DATOS_ACTUAL == "thingspeak" and network_available:
+                            enviar_thingspeak()
                     ultima_vez_envio_datos = time.time()
                 
                 pygame.time.delay(100)
@@ -2027,6 +2146,15 @@ def main():
             
         opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_acerca"])
         
+        # Manejo del parpadeo del cursor
+        current_time_millis = pygame.time.get_ticks()
+        if current_time_millis - cursor_blink_timer > CURSOR_BLINK_INTERVAL:
+            cursor_visible = not cursor_visible
+            cursor_blink_timer = current_time_millis
+        
+        if copy_success_message and current_time_millis > copy_message_timer:
+            copy_success_message = None
+
         # Manejo de eventos
         for evento in pygame.event.get():
             if evento.type == pygame.QUIT:
@@ -2121,6 +2249,19 @@ def main():
                     elif mostrar_ventana_consola_datos: # Si la ventana de consola está visible
                         if globals().get('rect_boton_cerrar_consola_datos') and globals().get('rect_boton_cerrar_consola_datos').collidepoint(evento.pos):
                             mostrar_ventana_consola_datos = False # Ocultar la ventana
+                        elif globals().get('rect_boton_copiar_consola') and globals().get('rect_boton_copiar_consola').collidepoint(evento.pos):
+                            if PYPERCLIP_AVAILABLE:
+                                try:
+                                    datos_a_copiar = "\n".join(datos_consola_buffer)
+                                    pyperclip.copy(datos_a_copiar)
+                                    copy_success_message = "Copiado!"
+                                    copy_message_timer = pygame.time.get_ticks() + 2000 # Mostrar por 2 segundos
+                                except Exception as e:
+                                    copy_success_message = "Error al copiar."
+                                    copy_message_timer = pygame.time.get_ticks() + 2000
+                            else:
+                                copy_success_message = "Pyperclip no disponible."
+                                copy_message_timer = pygame.time.get_ticks() + 2000
                         # Aquí se podrían manejar otros clics dentro de la consola si fuera necesario (e.g., scrollbar)
                     elif mostrar_ventana_idioma:
                         if rect_boton_es and rect_boton_es.collidepoint(evento.pos):
@@ -2345,6 +2486,21 @@ def main():
                         elif input_servicio_activo == "google_cloud":
                             if len(input_api_key_google_cloud_str) < 200: # Limitar longitud (Google keys pueden ser largas)
                                 input_api_key_google_cloud_str += evento.unicode
+                    elif evento.key == pygame.K_v and (pygame.key.get_mods() & pygame.KMOD_CTRL or pygame.key.get_mods() & pygame.KMOD_META):
+                        if PYPERCLIP_AVAILABLE:
+                            try:
+                                pasted_text = pyperclip.paste()
+                                if input_servicio_activo == "thingspeak":
+                                    input_api_key_thingspeak_str += pasted_text
+                                    if len(input_api_key_thingspeak_str) > 50:
+                                        input_api_key_thingspeak_str = input_api_key_thingspeak_str[:50]
+                                elif input_servicio_activo == "google_cloud":
+                                    input_api_key_google_cloud_str += pasted_text
+                                    if len(input_api_key_google_cloud_str) > 200:
+                                        input_api_key_google_cloud_str = input_api_key_google_cloud_str[:200]
+                            except Exception:
+                                pass
+
 
                 elif mostrar_ventana_idioma:
                     if evento.key == pygame.K_ESCAPE:
@@ -2365,36 +2521,32 @@ def main():
             mostrar_ventana_acerca_de or
             mostrar_ventana_idioma or
             mostrar_ventana_password_servicio or # Añadido para ser consistente
-            mostrar_ventana_servicio_datos or # Añadido para ser consistente
-            mostrar_ventana_consola_datos # No intentar reconectar si la consola está abierta
+            mostrar_ventana_servicio_datos # Añadido para ser consistente
         )
         if not serial_port_available and not condiciones_para_no_reconectar:
             ahora = pygame.time.get_ticks()
             if ahora - ultimo_intento_reconeccion_tiempo > INTERVALO_RECONECCION_MS:
                 ultimo_intento_reconeccion_tiempo = ahora
+                print(f"INFO: Intentando reconectar al puerto {puerto}...")
                 try:
-                    if ser: # Si el objeto ser existe
-                        try:
-                            if ser.is_open:
-                                ser.close()
-                                print(f"INFO: Puerto {ser.portstr if ser.portstr else puerto} cerrado antes de reconectar.")
-                        except Exception as e_close:
-                            print(f"ERROR: Al intentar cerrar el puerto {ser.portstr if ser.portstr else puerto} antes de reconectar: {e_close}")
-                        ser = None # Asegurarse de que ser es None antes de intentar reabrir
-                    
+                    # Asegurarse de que el puerto anterior esté completamente cerrado
+                    if ser is not None:
+                        ser.close()
                     ser = serial.Serial(puerto, baudios, timeout=1)
                     serial_port_available = True
-                    nmea_data_stale = False # Los datos ya no son viejos
-                    ultima_vez_datos_recibidos = pygame.time.get_ticks() # Resetear temporizador de "NO HAY DATOS"
+                    nmea_data_stale = False
+                    ultima_vez_datos_recibidos = pygame.time.get_ticks()
                     print(f"INFO: Reconexión exitosa al puerto {puerto} a {baudios} baudios.")
-                except serial.SerialException as e_reconect:
-                    # print(f"Fallo reconexión: {e_reconect}") # Mantenido comentado para no ser muy verboso
-                    ser = None # Asegurarse que ser es None si falla
-                    serial_port_available = False
-                except Exception as e_reconect_general: # Capturar otros posibles errores
-                    print(f"Error inesperado durante reconexión: {e_reconect_general}")
+                    agregar_a_consola(f"Reconectado a {puerto}.")
+                except serial.SerialException:
                     ser = None
                     serial_port_available = False
+                    # No imprimir nada aquí para no llenar la consola de fallos
+                except Exception as e:
+                    print(f"Error inesperado durante reconexión: {e}")
+                    ser = None
+                    serial_port_available = False
+            time.sleep(1) # Pequeña pausa para no sobrecargar la CPU en el bucle de reconexión
         
         # Lectura de datos del puerto serial
         if serial_port_available and ser and ser.is_open:
@@ -2431,16 +2583,24 @@ def main():
                 # print(f"Error general durante lectura/procesamiento NMEA: {e}")
                 pass # Continuar, puede ser un error puntual de datos
         
-        # Envío periódico de datos a ThingSpeak y CSV
-        if time.time() - ultima_vez_envio_datos >= INTERVALO_ENVIO_DATOS_S:
-            if serial_port_available and not nmea_data_stale: # Solo enviar si hay datos frescos
+        # Envío periódico de datos a ThingSpeak y CSV y chequeo de red
+        if not network_available:
+            now = time.time()
+            if now - last_network_check_time > 60: # Chequear cada 60 segundos
+                print("INFO: Verificando estado de la red en un hilo separado...")
+                network_check_thread = threading.Thread(target=check_network_connection)
+                network_check_thread.daemon = True
+                network_check_thread.start()
+                last_network_check_time = now
+        
+        if serial_port_available and not nmea_data_stale:
+            if time.time() - ultima_vez_envio_datos >= INTERVALO_ENVIO_DATOS_S:
                 estado_alarma_para_print = "SIN ALARMA"
                 if alarma_roll_babor_activa:
                     estado_alarma_para_print = "ALARMA BABOR"
-                elif alarma_roll_estribor_activa: # Usar elif para que no se sobreescriban si ambas son true (aunque la lógica de activación debería prevenirlo)
+                elif alarma_roll_estribor_activa:
                     estado_alarma_para_print = "ALARMA ESTRIBOR"
                 
-                # Combinar alarmas de pitch si están activas
                 if alarma_pitch_sentado_activa:
                     estado_alarma_para_print += " Y SENTADO" if "ALARMA" in estado_alarma_para_print else "ALARMA SENTADO"
                 elif alarma_pitch_encabuzado_activa:
@@ -2453,17 +2613,16 @@ def main():
                 guardar_csv()
                 agregar_a_consola(f"Guardado en CSV: {CSV_FILENAME}")
 
-                if SERVICIO_DATOS_ACTUAL == "thingspeak":
-                    enviar_thingspeak() # Esta función ya agrega a la consola
+                if SERVICIO_DATOS_ACTUAL == "thingspeak" and network_available:
+                    enviar_thingspeak()
                 elif SERVICIO_DATOS_ACTUAL == "google_cloud":
                     msg_gc = f"Google Cloud no implementado. API Key: {API_KEY_GOOGLE_CLOUD}"
                     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg_gc}")
                     agregar_a_consola(msg_gc)
-                # else: # Otros servicios futuros
-                    # pass
+                
                 print("---------------------------------------------------\n")
-            
-            ultima_vez_envio_datos = time.time() # Actualizar siempre para mantener el intervalo
+                
+                ultima_vez_envio_datos = time.time()
         
         # Detección de condiciones de alarma
         # Usar los valores de ts_pitch_float y ts_roll_float que ya son floats
@@ -3433,6 +3592,12 @@ def main():
             pygame.draw.rect(screen, COLOR_INPUT_BORDE, rect_input_apikey_thingspeak, 1)
             input_ts_surf = font.render(input_api_key_thingspeak_str, True, COLOR_TEXTO_NORMAL)
             screen.blit(input_ts_surf, (rect_input_apikey_thingspeak.left + 5, rect_input_apikey_thingspeak.top + 2))
+            
+            if input_servicio_activo == "thingspeak" and cursor_visible:
+                cursor_x = rect_input_apikey_thingspeak.left + 5 + input_ts_surf.get_width()
+                if cursor_x < rect_input_apikey_thingspeak.right - 2:
+                    pygame.draw.line(screen, COLOR_TEXTO_NORMAL, (cursor_x, rect_input_apikey_thingspeak.top + 4), (cursor_x, rect_input_apikey_thingspeak.bottom - 4), 1)
+
             current_y_servicio += label_apikey_ts_surf.get_height() + padding_y_servicio
 
 
@@ -3460,6 +3625,12 @@ def main():
             pygame.draw.rect(screen, COLOR_INPUT_BORDE, rect_input_apikey_google_cloud, 1)
             input_gc_surf = font.render(input_api_key_google_cloud_str, True, COLOR_TEXTO_NORMAL)
             screen.blit(input_gc_surf, (rect_input_apikey_google_cloud.left + 5, rect_input_apikey_google_cloud.top + 2))
+
+            if input_servicio_activo == "google_cloud" and cursor_visible:
+                cursor_x = rect_input_apikey_google_cloud.left + 5 + input_gc_surf.get_width()
+                if cursor_x < rect_input_apikey_google_cloud.right - 2:
+                    pygame.draw.line(screen, COLOR_TEXTO_NORMAL, (cursor_x, rect_input_apikey_google_cloud.top + 4), (cursor_x, rect_input_apikey_google_cloud.bottom - 4), 1)
+            
             current_y_servicio += label_apikey_gc_surf.get_height() + padding_y_servicio + 10 # Espacio antes de botones
 
             # Botones Guardar y Mostrar Consola
@@ -3499,7 +3670,7 @@ def main():
         elif mostrar_ventana_consola_datos:
             # Usar una fuente estándar para la consola, o definir una específica
             font_para_consola = pygame.font.Font(None, 22) # Puede ser la misma que font_bar_herramientas
-            draw_console_window(screen, font_para_consola, datos_consola_buffer)
+            draw_console_window(screen, font_para_consola, datos_consola_buffer, copy_success_message)
 
 
         # Mostrar tiempo restante del periodo de gracia
@@ -3568,8 +3739,8 @@ def main():
 
 
 # --- Nueva función para dibujar la ventana de la consola ---
-def draw_console_window(screen, font_console, buffer_datos):
-    global rect_ventana_consola_datos, rect_boton_cerrar_consola_datos # Necesario para guardar los rects
+def draw_console_window(screen, font_console, buffer_datos, copy_message=None):
+    global rect_ventana_consola_datos, rect_boton_cerrar_consola_datos, rect_boton_copiar_consola # Necesario para guardar los rects
 
     ventana_consola_width = 800 # Aumentado de 600 a 800
     ventana_consola_height = 400
@@ -3605,6 +3776,24 @@ def draw_console_window(screen, font_console, buffer_datos):
     area_texto_y = rect_ventana_consola_datos.top + titulo_consola_surf.get_height() + 20
     area_texto_width = rect_ventana_consola_datos.width - 20
     area_texto_height = rect_ventana_consola_datos.height - (titulo_consola_surf.get_height() + 30) - 10 # -10 para padding inferior
+
+    # Botón Copiar
+    btn_copiar_width = 100
+    btn_copiar_height = 30
+    rect_boton_copiar_consola = pygame.Rect(
+        rect_ventana_consola_datos.left + 10, 
+        rect_ventana_consola_datos.bottom - btn_copiar_height - 10, 
+        btn_copiar_width, 
+        btn_copiar_height
+    )
+    pygame.draw.rect(screen, COLOR_BOTON_CERRAR_CONSOLA_FONDO, rect_boton_copiar_consola)
+    copiar_text_surf = font_console.render("Copiar", True, COLOR_TEXTO_CONSOLA)
+    screen.blit(copiar_text_surf, copiar_text_surf.get_rect(center=rect_boton_copiar_consola.center))
+
+    # Mensaje de confirmación de copiado
+    if copy_message:
+        copy_msg_surf = font_console.render(copy_message, True, VERDE)
+        screen.blit(copy_msg_surf, (rect_boton_copiar_consola.right + 10, rect_boton_copiar_consola.centery - copy_msg_surf.get_height() // 2))
 
     # Dibujar los datos del buffer (las últimas N líneas)
     line_height = font_console.get_linesize()
