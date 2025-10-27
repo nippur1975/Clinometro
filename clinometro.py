@@ -65,23 +65,23 @@ if IS_WINDOWS and getattr(sys, 'frozen', False) and not is_registered_for_startu
 # Función para obtener la ruta correcta a los recursos (para PyInstaller)
 # ESTA ES LA UBICACIÓN CORRECTA, AL PRINCIPIO
 def resource_path(relative_path):
-    """ Get absolute path to resource, works for dev and for PyInstaller """
+    """
+    Devuelve la ruta absoluta al recurso.
+    Funciona correctamente tanto en entorno de desarrollo (.py)
+    como en ejecutable (.exe) generado con PyInstaller.
+    """
     try:
-        # PyInstaller creates a temp folder and stores path in _MEIPASS
-        base_path = sys._MEIPASS
-        # print(f"INFO: Running in PyInstaller mode, base_path: {base_path}") # Opcional: para depuración
-    except AttributeError:
-        # sys._MEIPASS no está definido, así que estamos en desarrollo
+        base_path = sys._MEIPASS  # carpeta temporal de PyInstaller
+    except Exception:
+        # Cuando se ejecuta como script normal
         base_path = os.path.dirname(os.path.abspath(__file__))
-        # print(f"INFO: Running in development mode, base_path: {base_path}") # Opcional: para depuración
-    except Exception as e:
-        # Capturar cualquier otra excepción inesperada durante la determinación de base_path
-        print(f"ERROR: Unexpected error in resource_path: {e}")
-        # Fallback a un comportamiento por defecto o relanzar, según se prefiera.
-        # Por ahora, usamos el directorio del script como fallback seguro.
-        base_path = os.path.dirname(os.path.abspath(__file__))
-        print(f"INFO: Falling back to development mode path due to unexpected error.")
-    return os.path.join(base_path, relative_path)
+
+    full_path = os.path.join(base_path, relative_path)
+
+    # Verificación opcional (muy útil para depurar)
+    if not os.path.exists(full_path):
+        print(f"⚠️  Archivo no encontrado: {full_path}")
+    return full_path
 
 def get_persistent_data_path(filename: str) -> str:
     """
@@ -377,9 +377,9 @@ TEXTOS = {
         "titulo_servicio_datos": "Configurar Servicio de Datos",
         "etiqueta_servicio": "Servicio:",
         "opcion_thingspeak": "ThingSpeak",
-        "opcion_google_cloud": "Google Cloud",
+        "opcion_google_cloud": "AZURE SQL",
         "etiqueta_apikey_thingspeak": "API Key ThingSpeak:",
-        "etiqueta_apikey_google_cloud": "API Key Google Cloud:",
+        "etiqueta_apikey_google_cloud": "NOMBRE BARCO:",
         "titulo_password_servicio": "Ingrese Contraseña",
         "etiqueta_password": "Contraseña:",
         "boton_entrar": "Entrar",
@@ -408,6 +408,9 @@ TEXTOS = {
         "about_line3": "Realizado por: Hdelacruz",
         "about_line4": "Email: hugo_delacruz@hotmail.com",
         "about_line5": "2025",
+        "menu_simulador_on": "MODO SIMULADOR ON",
+        "menu_simulador_off": "MODO SIMULADOR OFF",
+        "watermark_simulador": "MODO SIMULADOR",
         
     },
     "en": {
@@ -471,6 +474,9 @@ TEXTOS = {
         "about_line3": "Made by: Hdelacruz",
         "about_line4": "Email: hugo_delacruz@hotmail.com",
         "about_line5": "2025",
+        "menu_simulador_on": "SIMULATOR MODE ON",
+        "menu_simulador_off": "SIMULATOR MODE OFF",
+        "watermark_simulador": "SIMULATOR MODE",
        
     }
 }
@@ -478,6 +484,14 @@ TEXTOS = {
 # Configuración para logging y ThingSpeak
 API_KEY_THINGSPEAK = "5TRR6EXF6N5CZF54"
 THINGSPEAK_URL = "https://api.thingspeak.com/update"
+
+# --- Variables y datos para el modo Simulador ---
+simulador_activado = False
+sim_initialized = False
+sim_center_lat = 0.0
+sim_center_lon = 0.0
+sim_angle_on_circle_deg = 0.0
+sim_radius_meters = 400.0 # 800m de diámetro
 
 
 # Configuración para logging y ThingSpeak
@@ -1635,29 +1649,88 @@ def format_remaining_grace_time(start_time_utc: datetime | None) -> str | None:
         return None
 
 
+def reset_simulation_state():
+    """Inicializa o resetea los parámetros de la simulación circular."""
+    global sim_initialized, sim_center_lat, sim_center_lon, sim_angle_on_circle_deg
+    global ts_lat_decimal, ts_lon_decimal, ts_heading_float, ts_speed_float, ts_altitude_float, ts_pitch_float, ts_roll_float
+    
+    start_lat_deg, start_lon_deg, initial_heading_deg = -12.0, -77.716667, 10.0
+    
+    bearing_to_center_rad = math.radians((initial_heading_deg + 90) % 360)
+    R, start_lat_rad = 6378137, math.radians(start_lat_deg)
+    
+    d_lat = sim_radius_meters * math.cos(bearing_to_center_rad)
+    d_lon = sim_radius_meters * math.sin(bearing_to_center_rad)
+    
+    sim_center_lat = start_lat_deg + (d_lat / R) * (180 / math.pi)
+    sim_center_lon = start_lon_deg + (d_lon / (R * math.cos(start_lat_rad))) * (180 / math.pi)
+    
+    sim_angle_on_circle_deg = (math.degrees(bearing_to_center_rad) + 180) % 360
+    
+    ts_lat_decimal, ts_lon_decimal, ts_heading_float, ts_speed_float, ts_altitude_float, ts_pitch_float, ts_roll_float = \
+        start_lat_deg, start_lon_deg, initial_heading_deg, 12.0, 10.0, 0.0, 0.0
+    
+    sim_initialized = True
+
+def generar_datos_simulados(dt_seconds):
+    """Genera y actualiza las variables de datos con valores de la simulación circular."""
+    global ts_pitch_float, att_pitch_str, ts_roll_float, att_roll_str, ts_lat_decimal, latitude_str, ts_lon_decimal, longitude_str
+    global ts_speed_float, speed_str, ts_heading_float, heading_str, ts_altitude_float, altitude_str, ultima_vez_datos_recibidos, ts_timestamp_str
+    global sim_initialized, sim_angle_on_circle_deg
+
+    if not sim_initialized:
+        reset_simulation_state()
+
+    current_speed_kts = 12.0 + random.uniform(-2.0, 2.0)
+    distancia_recorrida_m = (current_speed_kts * 0.514444) * dt_seconds
+    angular_change_deg = math.degrees(distancia_recorrida_m / sim_radius_meters)
+    sim_angle_on_circle_deg = (sim_angle_on_circle_deg + angular_change_deg) % 360
+
+    R, center_lat_rad = 6378137, math.radians(sim_center_lat)
+    bearing_rad = math.radians(sim_angle_on_circle_deg)
+    
+    d_lat_m = sim_radius_meters * math.cos(bearing_rad)
+    d_lon_m = sim_radius_meters * math.sin(bearing_rad)
+
+    ts_lat_decimal = sim_center_lat + (d_lat_m / R) * (180 / math.pi)
+    ts_lon_decimal = sim_center_lon + (d_lon_m / (R * math.cos(center_lat_rad))) * (180 / math.pi)
+    
+    latitude_str = f"{abs(ts_lat_decimal):.4f}° {'N' if ts_lat_decimal >= 0 else 'S'}"
+    longitude_str = f"{abs(ts_lon_decimal):.4f}° {'E' if ts_lon_decimal >= 0 else 'W'}"
+
+    ts_heading_float = (sim_angle_on_circle_deg + 90) % 360
+    heading_str = f"{ts_heading_float:.0f}°"
+
+    ts_speed_float = current_speed_kts
+    speed_str = f"{ts_speed_float:.1f} Kt"
+    
+    ts_altitude_float = 10.0 + random.uniform(-1.5, 1.5)
+    altitude_str = f"{ts_altitude_float:.1f} M"
+
+    ts_pitch_float = random.uniform(-5.0, 5.0)
+    att_pitch_str = f"{ts_pitch_float:.1f}"
+
+    ts_roll_float = random.uniform(-8.0, 8.0)
+    att_roll_str = f"{ts_roll_float:.1f}"
+    
+    ts_timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    ultima_vez_datos_recibidos = pygame.time.get_ticks()
+
 def main():
-    global IDIOMA, sonido_alarma_actualmente_reproduciendo, tiempo_ultimo_sonido_iniciado
-    global INDICE_PROXIMA_ALARMA_A_SONAR, ultima_reproduccion_alarma_babor_tiempo
-    global ultima_reproduccion_alarma_estribor_tiempo, ultima_reproduccion_alarma_sentado_tiempo
-    global ultima_reproduccion_alarma_encabuzado_tiempo, ultima_vez_envio_datos
-    global ultimo_intento_reconeccion_tiempo, network_available, last_network_check_time
+    global IDIOMA, sonido_alarma_actualmente_reproduciendo, tiempo_ultimo_sonido_iniciado, INDICE_PROXIMA_ALARMA_A_SONAR
+    global ultima_reproduccion_alarma_babor_tiempo, ultima_reproduccion_alarma_estribor_tiempo, ultima_reproduccion_alarma_sentado_tiempo, ultima_reproduccion_alarma_encabuzado_tiempo
+    global ultima_vez_envio_datos, ultimo_intento_reconeccion_tiempo, network_available, last_network_check_time
     global latitude_str, longitude_str, speed_str, heading_str, att_heading_str, att_pitch_str, att_roll_str, altitude_str
-    global ts_pitch_float, ts_roll_float, ts_lat_decimal, ts_lon_decimal, ts_speed_float, ts_heading_float, ts_timestamp_str, ts_altitude_float # Añadir ts_altitude_float
-    global datos_consola_buffer, MAX_LINEAS_CONSOLA # Para la consola de datos
+    global ts_pitch_float, ts_roll_float, ts_lat_decimal, ts_lon_decimal, ts_speed_float, ts_heading_float, ts_timestamp_str, ts_altitude_float
+    global datos_consola_buffer, MAX_LINEAS_CONSOLA, simulador_activado, sim_data_index
     global alarma_roll_babor_activa, alarma_roll_estribor_activa, alarma_pitch_sentado_activa, alarma_pitch_encabuzado_activa
     global ser, serial_port_available, ultima_vez_datos_recibidos, nmea_data_stale
-    # Globales para la configuración del servicio de datos
-    global SERVICIO_DATOS_ACTUAL, API_KEY_THINGSPEAK, API_KEY_GOOGLE_CLOUD
-    global input_api_key_thingspeak_str, input_api_key_google_cloud_str
-    # Globales para el estado de las ventanas modales y sus inputs
+    global SERVICIO_DATOS_ACTUAL, API_KEY_THINGSPEAK, API_KEY_GOOGLE_CLOUD, input_api_key_thingspeak_str, input_api_key_google_cloud_str
     global mostrar_ventana_config_serial, mostrar_ventana_alarma, mostrar_ventana_idioma, mostrar_ventana_acerca_de
     global mostrar_ventana_servicio_datos, mostrar_ventana_password_servicio, mostrar_ventana_consola_datos
-    global input_puerto_str, input_baudios_idx, puerto_dropdown_activo, baudios_dropdown_activo # Para config puerto
-    global input_alarma_activo # Para config alarma
-    global input_password_str, intento_password_fallido, input_password_activo # Para password servicio
-    global input_servicio_activo # Para config servicio datos
+    global input_puerto_str, input_baudios_idx, puerto_dropdown_activo, baudios_dropdown_activo
+    global input_alarma_activo, input_password_str, intento_password_fallido, input_password_activo, input_servicio_activo
     global ACTIVATED_SUCCESSFULLY
-    global datos_consola_buffer # Para acceder al buffer de la consola
     
     # Inicializar Pygame Temprano para Ventana de Activación (si es necesario)
     pygame.init() # Asegurar que Pygame esté inicializado
@@ -2146,6 +2219,11 @@ def main():
             
         opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_acerca"])
         
+        if simulador_activado:
+            opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_simulador_on"])
+        else:
+            opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_simulador_off"])
+            
         # Manejo del parpadeo del cursor
         current_time_millis = pygame.time.get_ticks()
         if current_time_millis - cursor_blink_timer > CURSOR_BLINK_INTERVAL:
@@ -2215,7 +2293,14 @@ def main():
                                 
                                 elif opcion_clicada_texto == TEXTOS[IDIOMA]["menu_acerca"]:
                                     mostrar_ventana_acerca_de = True
-                                break # Salir del bucle for de opciones de menú una vez que se maneja un clic
+                                elif opcion_clicada_texto in [TEXTOS[IDIOMA]["menu_simulador_on"], TEXTOS[IDIOMA]["menu_simulador_off"]]:
+                                    simulador_activado = not simulador_activado
+                                    if simulador_activado:
+                                        reset_simulation_state()
+                                    else:
+                                        reset_ui_data()
+                                        sim_initialized = False
+                                break
                     
                     # Manejo de clic en ventana de servicio de datos
                     elif mostrar_ventana_servicio_datos:
@@ -2548,8 +2633,10 @@ def main():
                     serial_port_available = False
             time.sleep(1) # Pequeña pausa para no sobrecargar la CPU en el bucle de reconexión
         
-        # Lectura de datos del puerto serial
-        if serial_port_available and ser and ser.is_open:
+        # Lectura de datos del puerto serial o del simulador
+        if simulador_activado:
+            generar_datos_simulados(dt)
+        elif serial_port_available and ser and ser.is_open:
             try:
                 if ser.in_waiting > 0:
                     line = ser.readline().decode('ascii', errors='replace').strip()
@@ -2615,10 +2702,31 @@ def main():
 
                 if SERVICIO_DATOS_ACTUAL == "thingspeak" and network_available:
                     enviar_thingspeak()
-                elif SERVICIO_DATOS_ACTUAL == "google_cloud":
-                    msg_gc = f"Google Cloud no implementado. API Key: {API_KEY_GOOGLE_CLOUD}"
-                    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg_gc}")
-                    agregar_a_consola(msg_gc)
+                elif SERVICIO_DATOS_ACTUAL == "sql_server":
+                    partes_alarma = []
+                    if alarma_roll_babor_activa: partes_alarma.append("B")
+                    if alarma_roll_estribor_activa: partes_alarma.append("E")
+                    if alarma_pitch_sentado_activa: partes_alarma.append("S")
+                    if alarma_pitch_encabuzado_activa: partes_alarma.append("EN")
+                    estado_alarma_sql_corto = "+".join(partes_alarma) if partes_alarma else "OK"
+                    
+                    timestamp_final = ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+                    payload_sql = {
+                        'ship_id': ship_id_final,
+                        'timestamp': timestamp_final,
+                        'pitch': ts_pitch_float,
+                        'roll': ts_roll_float,
+                        'latitude': ts_lat_decimal,
+                        'longitude': ts_lon_decimal,
+                        'speed': ts_speed_float,
+                        'heading': ts_heading_float,
+                        'altitude': ts_altitude_float,
+                        'alarm_status': estado_alarma_sql_corto
+                    }
+                    sql_thread = threading.Thread(target=worker_enviar_sql, args=(payload_sql,))
+                    sql_thread.daemon = True
+                    sql_thread.start()
                 
                 print("---------------------------------------------------\n")
                 
@@ -3815,6 +3923,8 @@ def draw_console_window(screen, font_console, buffer_datos, copy_message=None):
 # Punto de entrada del programa
 if __name__ == "__main__":
     main()
+
+
 
 
 
