@@ -15,6 +15,13 @@ import pystray
 import time
 import sys # Necesario para sys._MEIPASS
 import pyodbc
+import base64
+
+try:
+    import pyperclip
+    PYPERCLIP_AVAILABLE = True
+except ImportError:
+    PYPERCLIP_AVAILABLE = False
 
 # Función para obtener la ruta correcta a los recursos (para PyInstaller)
 # ESTA ES LA UBICACIÓN CORRECTA, AL PRINCIPIO
@@ -113,6 +120,7 @@ TEXTOS = {
         "opcion_google_cloud": "Azure SQL",
         "etiqueta_apikey_thingspeak": "API Key ThingSpeak:",
         "etiqueta_apikey_google_cloud": "Nombre del Barco:",
+        "etiqueta_password_azure": "Contraseña:",
         "titulo_password_servicio": "Ingrese Contraseña",
         "etiqueta_password": "Contraseña:",
         "boton_entrar": "Entrar",
@@ -128,6 +136,8 @@ TEXTOS = {
         "rot": "ROT",
         "sentina1": "Sentina 1",
         "sentina2": "Sentina 2",
+        "port_label": "BABOR",
+        "stbd_label": "ESTRIBOR",
     },
     "en": {
         "titulo_ventana": "Lalito",
@@ -162,6 +172,7 @@ TEXTOS = {
         "opcion_google_cloud": "Azure SQL",
         "etiqueta_apikey_thingspeak": "ThingSpeak API Key:",
         "etiqueta_apikey_google_cloud": "Ship Name:",
+        "etiqueta_password_azure": "Password:",
         "titulo_password_servicio": "Enter Password",
         "etiqueta_password": "Password:",
         "boton_entrar": "Enter",
@@ -177,6 +188,8 @@ TEXTOS = {
         "rot": "ROT",
         "sentina1": "Bilge 1",
         "sentina2": "Bilge 2",
+        "port_label": "PORT",
+        "stbd_label": "STBD",
     }
 }
 
@@ -264,12 +277,21 @@ API_KEY_GOOGLE_CLOUD = ""  # Para almacenar la API Key de Google Cloud
 # Variables para los campos de texto en la ventana de configuración del servicio
 input_api_key_thingspeak_str = API_KEY_THINGSPEAK # Se inicializará desde config o default
 input_api_key_google_cloud_str = "" # Se inicializará desde config o default
+input_password_azure_str = "" # Para el campo de contraseña de Azure
 
 # Variables para la ventana de contraseña del servicio de datos
 CLAVE_ACCESO_SERVICIO = "29121975"
 mostrar_ventana_password_servicio = False
 input_password_str = ""
 intento_password_fallido = False
+
+# Variables para la ventana de Test de datos del puerto serie
+mostrar_ventana_test_serial = False
+datos_test_serial_buffer = []
+MAX_LINEAS_TEST_SERIAL = 100
+
+# Buffer para reensamblar tramas NMEA fragmentadas
+nmea_buffer = ""
 
 # Inicialización de Pygame
 pygame.init()
@@ -343,31 +365,40 @@ def reproducir_alarma(tipo_alarma):
 
 # Funciones de configuración
 def cargar_configuracion_serial():
-    global IDIOMA, SERVICIO_DATOS_ACTUAL, API_KEY_THINGSPEAK, API_KEY_GOOGLE_CLOUD
-    global input_api_key_thingspeak_str, input_api_key_google_cloud_str
+    global IDIOMA, SERVICIO_DATOS_ACTUAL, API_KEY_THINGSPEAK, API_KEY_GOOGLE_CLOUD, AZURE_SQL_PASSWORD
+    global input_api_key_thingspeak_str, input_api_key_google_cloud_str, input_password_azure_str
     try:
         with open(ARCHIVO_CONFIG_SERIAL, 'r') as f:
-            config = json.load(f)
+            encoded_config_str = f.read()
+        
+        # Decodificar la cadena Base64
+        decoded_config_bytes = base64.b64decode(encoded_config_str.encode('utf-8'))
+        config_str = decoded_config_bytes.decode('utf-8')
+        config = json.loads(config_str)
+        
         IDIOMA = config.get('idioma', 'es')
         
         # Cargar configuración del servicio de datos
         SERVICIO_DATOS_ACTUAL = config.get('servicio_datos', 'thingspeak')
-        API_KEY_THINGSPEAK = config.get('api_key_thingspeak', API_KEY_THINGSPEAK) # Usa el global actual como fallback si no está en el archivo
+        API_KEY_THINGSPEAK = config.get('api_key_thingspeak', API_KEY_THINGSPEAK)
         API_KEY_GOOGLE_CLOUD = config.get('api_key_google_cloud', '')
+        AZURE_SQL_PASSWORD = config.get('password_azure', '') # Cargar la contraseña
         
         # Inicializar los strings de input para la UI
         input_api_key_thingspeak_str = API_KEY_THINGSPEAK
         input_api_key_google_cloud_str = API_KEY_GOOGLE_CLOUD
+        input_password_azure_str = AZURE_SQL_PASSWORD # Asignar a la variable del input
         
         return config.get('puerto', 'COM9'), int(config.get('baudios', 9600))
     except (FileNotFoundError, json.JSONDecodeError, ValueError):
         IDIOMA = 'es'
         SERVICIO_DATOS_ACTUAL = 'thingspeak'
        
-        # API_KEY_THINGSPEAK ya tiene un valor global por defecto
         input_api_key_thingspeak_str = API_KEY_THINGSPEAK
         API_KEY_GOOGLE_CLOUD = ''
         input_api_key_google_cloud_str = ''
+        AZURE_SQL_PASSWORD = ''
+        input_password_azure_str = ''
         return 'COM9', 9600
 
 def guardar_configuracion_serial(puerto, baudios):
@@ -380,11 +411,18 @@ def guardar_configuracion_serial(puerto, baudios):
         'idioma': IDIOMA,
         'servicio_datos': SERVICIO_DATOS_ACTUAL,
         'api_key_thingspeak': input_api_key_thingspeak_str, # Guardar el valor del input
-        'api_key_google_cloud': input_api_key_google_cloud_str # Guardar el valor del input
+        'api_key_google_cloud': input_api_key_google_cloud_str, # Guardar el valor del input
+        'password_azure': input_password_azure_str # Guardar la contraseña
     }
     try:
+        # Convertir el diccionario a una cadena JSON
+        config_str = json.dumps(config, indent=4)
+        # Codificar la cadena en Base64
+        encoded_config_bytes = base64.b64encode(config_str.encode('utf-8'))
+        encoded_config_str = encoded_config_bytes.decode('utf-8')
+        
         with open(ARCHIVO_CONFIG_SERIAL, 'w') as f: 
-            json.dump(config, f, indent=4)
+            f.write(encoded_config_str)
         return True
     except IOError as e:
         print(f"ERROR: No se pudo guardar la configuración: {e}")
@@ -433,23 +471,38 @@ def parse_pfec_gpatt(sentence):
     global att_heading_str, att_pitch_str, att_roll_str, ultima_vez_datos_recibidos, ts_pitch_float, ts_roll_float
     try:
         parts = sentence.split(',')
+        
+        # Determinar los índices correctos basados en si la trama es 'GPatt' o 'GP'
         if len(parts) >= 5 and parts[1] == "GPatt":
-            att_heading_str = parts[2] if parts[2] else "N/A"
-            raw_pitch = parts[3]
-            att_pitch_str = raw_pitch if raw_pitch else "N/A"
-            try: 
-                ts_pitch_float = float(raw_pitch)
-            except: 
-                ts_pitch_float = 0.0 
-            raw_roll_part = parts[4].split('*')[0]
-            att_roll_str = raw_roll_part if raw_roll_part else "N/A"
-            try: 
-                ts_roll_float = float(raw_roll_part)
-            except ValueError: # Específico para error de conversión a float
-                ts_roll_float = 0.0
-            ultima_vez_datos_recibidos = pygame.time.get_ticks()
+            # Formato largo: $PFEC,GPatt,heading,pitch,roll*CS
+            h_idx, p_idx, r_idx = 2, 3, 4
+        elif len(parts) >= 4 and parts[1] == "GP":
+             # Formato corto: $PFEC,GP,heading,pitch,roll*CS
+            h_idx, p_idx, r_idx = 2, 3, 4 # Los índices de datos son los mismos, solo cambia la validación
+        else:
+            return # No es una trama que podamos parsear
+
+        att_heading_str = parts[h_idx] if parts[h_idx] else "N/A"
+        raw_pitch = parts[p_idx]
+        att_pitch_str = raw_pitch if raw_pitch else "N/A"
+        
+        try:
+            ts_pitch_float = float(raw_pitch)
+        except (ValueError, IndexError):
+            ts_pitch_float = 0.0
+            
+        raw_roll_part = parts[r_idx].split('*')[0]
+        att_roll_str = raw_roll_part if raw_roll_part else "N/A"
+        
+        try:
+            ts_roll_float = float(raw_roll_part)
+        except (ValueError, IndexError):
+            ts_roll_float = 0.0
+            
+        ultima_vez_datos_recibidos = pygame.time.get_ticks()
+
     except (IndexError, ValueError) as e:
-        print(f"Error parseando sentencia PFEC,GPatt: {e}. Sentencia: {sentence}")
+        print(f"Error parseando sentencia PFEC: {e}. Sentencia: {sentence}")
     except Exception as e:
         print(f"Error inesperado en parse_pfec_gpatt: {e}. Sentencia: {sentence}")
 
@@ -521,23 +574,20 @@ def parse_gll(sentence):
             latitude_str_temp = f"{lat_deg_ui}° {lat_min_formatted_ui}' {lat_dir}"
             ts_lat_decimal_temp = convertir_coord(lat_raw_val, lat_dir, is_longitude=False)
         
-        # Procesamiento de longitud (igual que antes)
-        if lon_raw_val and lon_dir and len(lon_raw_val) >= 3:
-            lon_parts_ui = lon_raw_val.split('.')[0]
-            deg_chars = 0
-            if len(lon_parts_ui) >= 5: 
-                deg_chars = 3 
-            elif len(lon_parts_ui) >= 4: 
-                deg_chars = 2 
-            elif len(lon_parts_ui) >= 3: 
-                deg_chars = 1 
-            if deg_chars > 0:
-                lon_deg_ui = lon_raw_val[:deg_chars]
-                lon_min_full_ui = lon_raw_val[deg_chars:]
+        # Procesamiento de longitud (simplificado y corregido)
+        if lon_raw_val and lon_dir:
+            idx_punto_lon = lon_raw_val.find('.')
+            # Longitud es DDDMM.MMMM o DDMM.MMMM, los minutos siempre empiezan 2 pos a la izquierda del punto
+            if idx_punto_lon > 2:
+                min_start_idx_lon = idx_punto_lon - 2
+                lon_deg_ui = lon_raw_val[:min_start_idx_lon]
+                lon_min_full_ui = lon_raw_val[min_start_idx_lon:]
+                
                 try: 
                     lon_min_formatted_ui = f"{float(lon_min_full_ui):.3f}"
                 except: 
                     lon_min_formatted_ui = lon_min_full_ui
+                
                 longitude_str_temp = f"{lon_deg_ui}° {lon_min_formatted_ui}' {lon_dir}"
                 ts_lon_decimal_temp = convertir_coord(lon_raw_val, lon_dir, is_longitude=True)
         
@@ -593,21 +643,15 @@ def parse_gga(sentence):
                 latitude_str_temp = f"{lat_deg_ui}° {lat_min_formatted_ui}' {lat_dir}"
                 ts_lat_decimal_temp = convertir_coord(lat_raw_val, lat_dir, is_longitude=False)
             
-            if lon_raw_val and lon_dir and len(lon_raw_val) >=3:
-                lon_parts_ui = lon_raw_val.split('.')[0]
-                deg_chars = 0
-                if len(lon_parts_ui) >= 5: 
-                    deg_chars = 3 
-                elif len(lon_parts_ui) >= 4: 
-                    deg_chars = 2 
-                elif len(lon_parts_ui) >= 3: 
-                    deg_chars = 1 
-                if deg_chars > 0:
-                    lon_deg_ui = lon_raw_val[:deg_chars]
-                    lon_min_full_ui = lon_raw_val[deg_chars:]
-                    try: 
+            if lon_raw_val and lon_dir:
+                idx_punto_lon = lon_raw_val.find('.')
+                if idx_punto_lon > 2:
+                    min_start_idx_lon = idx_punto_lon - 2
+                    lon_deg_ui = lon_raw_val[:min_start_idx_lon]
+                    lon_min_full_ui = lon_raw_val[min_start_idx_lon:]
+                    try:
                         lon_min_formatted_ui = f"{float(lon_min_full_ui):.3f}"
-                    except: 
+                    except:
                         lon_min_formatted_ui = lon_min_full_ui
                     longitude_str_temp = f"{lon_deg_ui}° {lon_min_formatted_ui}' {lon_dir}"
                     ts_lon_decimal_temp = convertir_coord(lon_raw_val, lon_dir, is_longitude=True)
@@ -644,21 +688,15 @@ def parse_rmc(sentence):
                 latitude_str_temp = f"{lat_deg_ui}° {lat_min_formatted_ui}' {lat_dir}"
                 ts_lat_decimal_temp = convertir_coord(lat_raw_val, lat_dir, is_longitude=False)
             
-            if lon_raw_val and lon_dir and len(lon_raw_val) >=3:
-                lon_parts_ui = lon_raw_val.split('.')[0]
-                deg_chars = 0
-                if len(lon_parts_ui) >= 5: 
-                    deg_chars = 3 
-                elif len(lon_parts_ui) >= 4: 
-                    deg_chars = 2 
-                elif len(lon_parts_ui) >= 3: 
-                    deg_chars = 1 
-                if deg_chars > 0:
-                    lon_deg_ui = lon_raw_val[:deg_chars]
-                    lon_min_full_ui = lon_raw_val[deg_chars:]
-                    try: 
+            if lon_raw_val and lon_dir:
+                idx_punto_lon = lon_raw_val.find('.')
+                if idx_punto_lon > 2:
+                    min_start_idx_lon = idx_punto_lon - 2
+                    lon_deg_ui = lon_raw_val[:min_start_idx_lon]
+                    lon_min_full_ui = lon_raw_val[min_start_idx_lon:]
+                    try:
                         lon_min_formatted_ui = f"{float(lon_min_full_ui):.3f}"
-                    except: 
+                    except:
                         lon_min_formatted_ui = lon_min_full_ui
                     longitude_str_temp = f"{lon_deg_ui}° {lon_min_formatted_ui}' {lon_dir}"
                     ts_lon_decimal_temp = convertir_coord(lon_raw_val, lon_dir, is_longitude=True)
@@ -711,7 +749,7 @@ def parse_hdt(sentence):
             heading_val_str = parts[1]
             try: 
                 heading_val_float = float(heading_val_str)
-                heading_str = f"{heading_val_float:.0f}°"
+                heading_str = f"{heading_val_float:.1f}°"
                 ts_heading_float = heading_val_float      
             except: 
                 heading_str = f"{heading_val_str}°"
@@ -779,17 +817,17 @@ def parse_phdl(sentence):
         print(f"Error parseando sentencia PHDL: {e}. Sentencia: {sentence}")
 
 def parse_rot(sentence):
-    """Parsea la sentencia ROT para la tasa de giro."""
+    """Parsea la sentencia GPROT para la tasa de giro."""
     global rot_float, ultima_vez_datos_recibidos
     try:
         parts = sentence.split(',')
-        if len(parts) >= 2 and parts[0].endswith('ROT'):
+        if len(parts) >= 2 and parts[0] == '$GPROT':
             rot_value_str = parts[1]
             if rot_value_str:
                 rot_float = float(rot_value_str)
                 ultima_vez_datos_recibidos = pygame.time.get_ticks()
     except (IndexError, ValueError) as e:
-        print(f"Error parseando sentencia ROT: {e}. Sentencia: {sentence}")
+        print(f"Error parseando sentencia GPROT: {e}. Sentencia: {sentence}")
 
 def reset_ui_data():
     global latitude_str, longitude_str, speed_str, heading_str
@@ -1125,8 +1163,8 @@ def enviar_y_guardar_datos_periodicamente():
     estado_alarma_sql_corto = "+".join(partes_alarma) if partes_alarma else "OK"
 
     print(f"--- Guardando y Enviando Datos ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---")
-    print(f"Valores: P:{ts_pitch_float}, R:{ts_roll_float}, Lat:{ts_lat_decimal}, Lon:{ts_lon_decimal}, Spd:{ts_speed_float}, Hdg:{ts_heading_float}, Alt:{ts_altitude_float}, Alarma: {estado_alarma_sql_corto}")
-    agregar_a_consola(f"Datos: P:{ts_pitch_float:.1f}, R:{ts_roll_float:.1f}, Lat:{ts_lat_decimal:.4f}, Lon:{ts_lon_decimal:.4f}, Spd:{ts_speed_float:.1f}, Hdg:{ts_heading_float:.0f}, Alarma: {estado_alarma_sql_corto}")
+    print(f"ID:{API_KEY_GOOGLE_CLOUD}, P:{ts_pitch_float}, R:{ts_roll_float}, Lat:{ts_lat_decimal}, Lon:{ts_lon_decimal}, Spd:{ts_speed_float}, Hdg:{ts_heading_float}, Alt:{ts_altitude_float}, ROT:{rot_float}, S1:{switch1_status}, S2:{switch2_status}, Alarma:{estado_alarma_sql_corto}")
+    agregar_a_consola(f"ID:{API_KEY_GOOGLE_CLOUD}, P:{ts_pitch_float:.1f}, R:{ts_roll_float:.1f}, ROT:{rot_float:.1f}, S1:{switch1_status}, S2:{switch2_status}, Alarma:{estado_alarma_sql_corto}")
 
     # Guardar en CSV
     guardar_csv()
@@ -1157,33 +1195,38 @@ def enviar_y_guardar_datos_periodicamente():
     ultima_vez_envio_datos = time.time()
 
 def procesar_datos_serie():
-    """Lee y procesa todas las sentencias NMEA disponibles en el puerto serie."""
-    global ser, serial_port_available, nmea_data_stale
-    
+    """Lee y procesa las sentencias NMEA, reconstruyendo tramas fragmentadas."""
+    global ser, serial_port_available, nmea_data_stale, nmea_buffer
+    global mostrar_ventana_test_serial, datos_test_serial_buffer, MAX_LINEAS_TEST_SERIAL
+
     if not (serial_port_available and ser and ser.is_open):
         return
 
     try:
         if ser.in_waiting > 0:
-            # Leer todos los datos disponibles en el buffer de una vez
             data_bytes = ser.read(ser.in_waiting)
             data_str = data_bytes.decode('ascii', errors='replace')
             
-            # Dividir los datos en líneas. Las sentencias NMEA terminan en \r\n.
-            lines = data_str.split('\r\n')
-            
-            for line in lines:
-                line = line.strip() # Limpiar espacios en blanco adicionales
+            # Añadir los datos nuevos al buffer
+            nmea_buffer += data_str
+
+            # Procesar el buffer línea por línea
+            while '\r\n' in nmea_buffer:
+                line, nmea_buffer = nmea_buffer.split('\r\n', 1)
+                
+                # Limpiar la línea de caracteres nulos o extraños antes de procesar
+                line = ''.join(filter(lambda x: x in '0123456789,.-*ABCDEFGHIJKLMNOPQRSTUVWXYZ$', line))
+
                 if not line:
                     continue
-                
-                # Si la ventana de test está abierta, añadir la línea cruda al buffer
+
+                # Añadir la línea cruda (reconstruida) a la ventana de test si está abierta
                 if mostrar_ventana_test_serial:
                     if len(datos_test_serial_buffer) >= MAX_LINEAS_TEST_SERIAL:
                         datos_test_serial_buffer.pop(0)
                     datos_test_serial_buffer.append(line)
 
-                # Parsear las sentencias NMEA
+                # Parsear las sentencias NMEA completas
                 if line.startswith('$GPGLL') or line.startswith('$GNGLL'):
                     parse_gll(line)
                 elif line.startswith('$GPGGA') or line.startswith('$GNGGA'):
@@ -1196,13 +1239,13 @@ def procesar_datos_serie():
                     parse_hdt(line)
                 elif line.startswith('$GPHDG') or line.startswith('$GNHDG'):
                     parse_hdg(line)
-                elif line.startswith('$PFEC,GPatt'):
+                elif line.startswith('$PFEC,GP'): # Captura tanto GPatt como GP
                     parse_pfec_gpatt(line)
                 elif line.startswith('$GPZDA') or line.startswith('$GNZDA'):
                     parse_gpzda(line)
                 elif line.startswith('$PHDL'):
                     parse_phdl(line)
-                elif line.endswith('ROT'):
+                elif line.startswith('$GPROT'):
                     parse_rot(line)
 
     except serial.SerialException as se:
@@ -1214,8 +1257,6 @@ def procesar_datos_serie():
         reset_ui_data()
         nmea_data_stale = True
     except Exception as e:
-        # Errores generales (ej. decode) se ignoran para no detener el bucle,
-        # pero se podría añadir un log si es necesario.
         print(f"Error general durante lectura/procesamiento NMEA: {e}")
         pass
 
@@ -1651,14 +1692,15 @@ def main():
     global datos_consola_buffer, MAX_LINEAS_CONSOLA, simulador_activado, sim_data_index
     global alarma_roll_babor_activa, alarma_roll_estribor_activa, alarma_pitch_sentado_activa, alarma_pitch_encabuzado_activa
     global ser, serial_port_available, ultima_vez_datos_recibidos, nmea_data_stale
-    global SERVICIO_DATOS_ACTUAL, API_KEY_THINGSPEAK, API_KEY_GOOGLE_CLOUD, input_api_key_thingspeak_str, input_api_key_google_cloud_str
+    global SERVICIO_DATOS_ACTUAL, API_KEY_THINGSPEAK, API_KEY_GOOGLE_CLOUD, input_api_key_thingspeak_str, input_api_key_google_cloud_str, input_password_azure_str
     global mostrar_ventana_config_serial, mostrar_ventana_alarma, mostrar_ventana_idioma, mostrar_ventana_acerca_de
-    global mostrar_ventana_servicio_datos, mostrar_ventana_password_servicio, mostrar_ventana_consola_datos
+    global mostrar_ventana_servicio_datos, mostrar_ventana_password_servicio, mostrar_ventana_consola_datos, mostrar_ventana_test_serial
+    global datos_test_serial_buffer
     global input_puerto_str, input_baudios_idx, puerto_dropdown_activo, baudios_dropdown_activo
     global input_alarma_activo, input_password_str, intento_password_fallido, input_password_activo, input_servicio_activo
     
     pygame.init() # Asegurar que Pygame esté inicializado
-    dimensiones = [1060, 600] # Altura aumentada para ROT y LEDs
+    dimensiones = [1100, 600] # Ancho aumentado para cajas de datos
     screen = pygame.display.set_mode(dimensiones) # Crear la pantalla
     pygame.display.set_caption("Clinómetro") # Título genérico inicial
 
@@ -1676,15 +1718,22 @@ def main():
     
     # Configuración de áreas de visualización
     ALTURA_BARRA_HERRAMIENTAS = 30
-    nuevo_ancho_area_izquierda = 750
+    nuevo_ancho_area_izquierda = 790 # Aumentado para centrar
     area_izquierda_rect = pygame.Rect(10, ALTURA_BARRA_HERRAMIENTAS + 10, nuevo_ancho_area_izquierda, dimensiones[1] - (ALTURA_BARRA_HERRAMIENTAS + 20))
     
     # Configuración de círculos para pitch y roll
-    radio_circulo_img = 78 * 2
+    radio_circulo_img = 180 # Corregido a 180 (original era 156)
     margen_superior_circulos = 20
+    # Ajustar centro_y para el nuevo radio y centrarlo verticalmente
     centro_y_circulos = area_izquierda_rect.top + radio_circulo_img + margen_superior_circulos
-    centro_x_circulo1 = 10 + radio_circulo_img + 43 # 45 - 2 = 43
-    centro_x_circulo2 = centro_x_circulo1 + (2 * radio_circulo_img) + 50
+    
+    # Ajustar centros en x para que quepan y estén bien espaciados
+    espacio_entre_circulos = 40
+    # Calcular el ancho total de los círculos para centrarlos en el area_izquierda_rect
+    ancho_total_contenido = (2 * radio_circulo_img * 2) + espacio_entre_circulos
+    offset_x_inicial = (area_izquierda_rect.width - ancho_total_contenido) / 2
+    centro_x_circulo1 = area_izquierda_rect.left + offset_x_inicial + radio_circulo_img
+    centro_x_circulo2 = centro_x_circulo1 + (2 * radio_circulo_img) + espacio_entre_circulos
     
     # Configuración de marcas de grados
     LONGITUD_MARCA_GRADO = 16
@@ -1861,7 +1910,7 @@ def main():
     # Variables para la ventana de servicio de datos
     mostrar_ventana_servicio_datos = False
     ventana_servicio_width = 400
-    ventana_servicio_height = 330 # Ajustada para el nuevo botón
+    ventana_servicio_height = 370 # Aumentada para el campo de contraseña
     ventana_servicio_x = (dimensiones[0] - ventana_servicio_width) // 2
     ventana_servicio_y = (dimensiones[1] - ventana_servicio_height) // 2
     rect_ventana_servicio_datos = pygame.Rect(ventana_servicio_x, ventana_servicio_y, ventana_servicio_width, ventana_servicio_height)
@@ -1896,12 +1945,6 @@ def main():
     copy_success_message = None
     copy_message_timer = 0
 
-    # Variables para la ventana de Test de datos del puerto serie
-    mostrar_ventana_test_serial = False
-    datos_test_serial_buffer = []
-    MAX_LINEAS_TEST_SERIAL = 100
-
-
     # Variables para el cursor parpadeante
     cursor_visible = True
     cursor_blink_timer = 0
@@ -1934,7 +1977,7 @@ def main():
                 screen.get_height()
             except pygame.error:
                 # Re-initialize the display
-                dimensiones = [1060, 500]
+                dimensiones = [1100, 600]
                 screen = pygame.display.set_mode(dimensiones)
                 pygame.display.set_caption(TEXTOS[IDIOMA]["titulo_ventana"])
         else:
@@ -2065,6 +2108,8 @@ def main():
                             input_servicio_activo = "thingspeak"
                         elif globals().get('rect_input_apikey_google_cloud') and globals().get('rect_input_apikey_google_cloud').collidepoint(evento.pos):
                             input_servicio_activo = "google_cloud"
+                        elif globals().get('rect_input_password_azure') and globals().get('rect_input_password_azure').collidepoint(evento.pos):
+                            input_servicio_activo = "password_azure"
                         elif globals().get('rect_boton_guardar_servicio') and globals().get('rect_boton_guardar_servicio').collidepoint(evento.pos):
                             # Guardar los valores de los inputs en las variables globales principales
                             API_KEY_THINGSPEAK = input_api_key_thingspeak_str
@@ -2131,6 +2176,7 @@ def main():
                                 # Cargar claves actuales a los inputs de la ventana de servicio
                                 input_api_key_thingspeak_str = API_KEY_THINGSPEAK
                                 input_api_key_google_cloud_str = API_KEY_GOOGLE_CLOUD
+                                input_password_azure_str = AZURE_SQL_PASSWORD
                             else:
                                 input_password_str = ""
                                 intento_password_fallido = True
@@ -2266,6 +2312,19 @@ def main():
                         if 'rect_boton_cerrar_test_serial' in globals() and rect_boton_cerrar_test_serial.collidepoint(evento.pos):
                             mostrar_ventana_test_serial = False
                             mostrar_ventana_config_serial = True # Volver a abrir la config
+                        elif 'rect_boton_copiar_test_serial' in globals() and rect_boton_copiar_test_serial.collidepoint(evento.pos):
+                            if PYPERCLIP_AVAILABLE:
+                                try:
+                                    datos_a_copiar = "\n".join(datos_test_serial_buffer)
+                                    pyperclip.copy(datos_a_copiar)
+                                    copy_success_message = "Copiado!"
+                                    copy_message_timer = pygame.time.get_ticks() + 2000 # 2 segundos
+                                except Exception as e:
+                                    copy_success_message = "Error al copiar."
+                                    copy_message_timer = pygame.time.get_ticks() + 2000
+                            else:
+                                copy_success_message = "Pyperclip no disponible."
+                                copy_message_timer = pygame.time.get_ticks() + 2000
 
             # Manejo de entrada de teclado
             if evento.type == pygame.KEYDOWN:
@@ -2321,6 +2380,8 @@ def main():
                             input_api_key_thingspeak_str = input_api_key_thingspeak_str[:-1]
                         elif input_servicio_activo == "google_cloud":
                             input_api_key_google_cloud_str = input_api_key_google_cloud_str[:-1]
+                        elif input_servicio_activo == "password_azure":
+                            input_password_azure_str = input_password_azure_str[:-1]
                     elif evento.unicode.isprintable(): # Aceptar cualquier caracter imprimible para API keys
                         if input_servicio_activo == "thingspeak":
                             if len(input_api_key_thingspeak_str) < 50: # Limitar longitud
@@ -2328,6 +2389,9 @@ def main():
                         elif input_servicio_activo == "google_cloud":
                             if len(input_api_key_google_cloud_str) < 200: # Limitar longitud (Google keys pueden ser largas)
                                 input_api_key_google_cloud_str += evento.unicode
+                        elif input_servicio_activo == "password_azure":
+                            if len(input_password_azure_str) < 100:
+                                input_password_azure_str += evento.unicode
                     elif evento.key == pygame.K_v and (pygame.key.get_mods() & pygame.KMOD_CTRL or pygame.key.get_mods() & pygame.KMOD_META):
                         if PYPERCLIP_AVAILABLE:
                             try:
@@ -2340,6 +2404,10 @@ def main():
                                     input_api_key_google_cloud_str += pasted_text
                                     if len(input_api_key_google_cloud_str) > 200:
                                         input_api_key_google_cloud_str = input_api_key_google_cloud_str[:200]
+                                elif input_servicio_activo == "password_azure":
+                                    input_password_azure_str += pasted_text
+                                    if len(input_password_azure_str) > 100:
+                                        input_password_azure_str = input_password_azure_str[:100]
                             except Exception:
                                 pass
 
@@ -2669,24 +2737,26 @@ def main():
                     screen.blit(roll_valor_surf, roll_valor_rect)
                             
                     letra_roll_str = ""
-                    if valor_roll_float > 0.1: letra_roll_str = "S"
-                    elif valor_roll_float < -0.1: letra_roll_str = "P"
+                    if valor_roll_float > 0.1: # Positivo es Babor (Port)
+                        letra_roll_str = "P"
+                    elif valor_roll_float < -0.1: # Negativo es Estribor (Starboard)
+                        letra_roll_str = "S"
                     if letra_roll_str:
                         letra_roll_surf = font_circulos_textos.render(letra_roll_str, True, COLOR_LETRA_ROLL)
                         letra_roll_rect = letra_roll_surf.get_rect(midtop=(roll_valor_rect.centerx, roll_valor_rect.bottom + OFFSET_LETRA_ROLL_Y))
                         screen.blit(letra_roll_surf, letra_roll_rect)
 
                     pos_flecha_roll_y_centro = roll_valor_rect.centery
-                    if valor_roll_float > 0.1:
-                        pos_flecha_roll_x = roll_valor_rect.right + OFFSET_FLECHA_TEXTO + (LONGITUD_FLECHA_DIR // 2)
-                        pygame.draw.line(screen, VERDE, (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
-                        pygame.draw.line(screen, VERDE, (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro - ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
-                        pygame.draw.line(screen, VERDE, (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro + ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
-                    elif valor_roll_float < -0.1:
+                    if valor_roll_float > 0.1: # Positivo (Babor), flecha ROJA a la IZQUIERDA
                         pos_flecha_roll_x = roll_valor_rect.left - OFFSET_FLECHA_TEXTO - (LONGITUD_FLECHA_DIR // 2)
                         pygame.draw.line(screen, ROJO, (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
                         pygame.draw.line(screen, ROJO, (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro - ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
                         pygame.draw.line(screen, ROJO, (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro + ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+                    elif valor_roll_float < -0.1: # Negativo (Estribor), flecha VERDE a la DERECHA
+                        pos_flecha_roll_x = roll_valor_rect.right + OFFSET_FLECHA_TEXTO + (LONGITUD_FLECHA_DIR // 2)
+                        pygame.draw.line(screen, VERDE, (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+                        pygame.draw.line(screen, VERDE, (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro - ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
+                        pygame.draw.line(screen, VERDE, (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro + ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
                 except ValueError:
                     pass
 
@@ -2784,7 +2854,7 @@ def main():
         pitch_valor_str = "N/A" # Default
         if att_pitch_str != "N/A":
             try:
-                pitch_valor_str = f"{float(att_pitch_str):+.0f}°" # Formato con signo y 0 decimales
+                pitch_valor_str = f"{float(att_pitch_str):+.1f}°" # Formato con signo y 1 decimal
             except ValueError:
                 pass # Mantener "N/A" si no es convertible
         
@@ -2811,11 +2881,11 @@ def main():
         if att_roll_str != "N/A":
             try:
                 roll_val = float(att_roll_str)
-                roll_valor_display_str = f"{roll_val:+.0f}°"
-                if roll_val > 0.1: # Umbral pequeño para evitar mostrar dirección con 0.0
-                    roll_direccion_str = "ESTRIBOR" if IDIOMA == "es" else "STARBOARD"
-                elif roll_val < -0.1:
+                roll_valor_display_str = f"{roll_val:+.1f}°"
+                if roll_val > 0.1: # Si es POSITIVO, es BABOR
                     roll_direccion_str = "BABOR" if IDIOMA == "es" else "PORT"
+                elif roll_val < -0.1: # Si es NEGATIVO, es ESTRIBOR
+                    roll_direccion_str = "ESTRIBOR" if IDIOMA == "es" else "STARBOARD"
             except ValueError:
                 pass
         
@@ -2860,16 +2930,13 @@ def main():
         # Dibujar la nueva caja de Altitud debajo de los círculos
         # (Asegurarse de que se dibuje antes de los mensajes de estado para que no los tape)
         altura_caja_altitud = 60 # Altura para la caja de altitud
-        ancho_caja_altitud = (radio_circulo_img * 2) * 2 + 50 # Ancho similar a los dos círculos juntos
         
-        ancho_original_caja_altitud = (centro_x_circulo2 + radio_circulo_img) - (centro_x_circulo1 - radio_circulo_img)
-        ancho_caja_altitud = ancho_original_caja_altitud / 2
-
-        # Calcular el centro del espacio disponible para la caja original
-        centro_x_disponible = (centro_x_circulo1 - radio_circulo_img) + (ancho_original_caja_altitud / 2)
+        # Calcular el ancho total que ocupan los círculos para centrar la caja de altitud y la barra de ROT
+        ancho_total_circulos = (centro_x_circulo2 + radio_circulo_img) - (centro_x_circulo1 - radio_circulo_img)
+        centro_x_area_circulos = (centro_x_circulo1 - radio_circulo_img) + (ancho_total_circulos / 2)
         
-        # Calcular el nuevo x_inicio para centrar la caja reducida
-        x_inicio_caja_altitud = centro_x_disponible - (ancho_caja_altitud / 2)
+        ancho_caja_altitud = 300 # Un ancho fijo
+        x_inicio_caja_altitud = centro_x_area_circulos - (ancho_caja_altitud / 2)
 
         y_caja_altitud = centro_y_circulos + radio_circulo_img + 20 # 20px de margen debajo de los círculos
         
@@ -2924,6 +2991,61 @@ def main():
         label_sentina2_surf = font.render(TEXTOS[IDIOMA]["sentina2"], True, BLANCO)
         label_sentina2_rect = label_sentina2_surf.get_rect(center=(x_led2, y_leds + radio_led + 15))
         screen.blit(label_sentina2_surf, label_sentina2_rect)
+
+        # --- Dibujar la barra de ROT ---
+        y_barra_rot = dim_caja_altitud.bottom + 35 # Espacio reducido debajo de la caja de altitud
+        ancho_barra_rot = 400 # Aumentado de 300 a 400
+        alto_barra_rot = 15
+        x_barra_rot = centro_x_area_circulos - (ancho_barra_rot / 2)
+        
+        rect_barra_rot_fondo = pygame.Rect(x_barra_rot, y_barra_rot, ancho_barra_rot, alto_barra_rot)
+        
+        # Dibujar fondo de la barra y marcas
+        pygame.draw.rect(screen, NEGRO, rect_barra_rot_fondo)
+        pygame.draw.rect(screen, BLANCO, rect_barra_rot_fondo, 1)
+        
+        # Marca central (0) y marcas adicionales ("garrapatas")
+        tick_values = [-60, -40, -20, 0, 20, 40, 60]
+        for val in tick_values:
+            ratio = val / 60.0
+            tick_x = rect_barra_rot_fondo.centerx + ratio * (ancho_barra_rot / 2)
+            pygame.draw.line(screen, BLANCO, (tick_x, rect_barra_rot_fondo.top), (tick_x, rect_barra_rot_fondo.bottom), 1)
+        
+        # Etiquetas
+        font_rot_bar = pygame.font.Font(None, 20)
+        label_port_surf = font_rot_bar.render(TEXTOS[IDIOMA]["port_label"], True, BLANCO)
+        label_stbd_surf = font_rot_bar.render(TEXTOS[IDIOMA]["stbd_label"], True, BLANCO)
+        
+        screen.blit(label_port_surf, (rect_barra_rot_fondo.left - label_port_surf.get_width() - 5, rect_barra_rot_fondo.centery - label_port_surf.get_height() // 2))
+        screen.blit(label_stbd_surf, (rect_barra_rot_fondo.right + 5, rect_barra_rot_fondo.centery - label_stbd_surf.get_height() // 2))
+
+        # Dibujar etiquetas numéricas para las marcas
+        for val in tick_values:
+            ratio = val / 60.0
+            tick_x = rect_barra_rot_fondo.centerx + ratio * (ancho_barra_rot / 2)
+            label_surf = font_rot_bar.render(str(abs(val)), True, BLANCO)
+            screen.blit(label_surf, (tick_x - label_surf.get_width() // 2, rect_barra_rot_fondo.bottom + 5))
+        
+        # Dibujar indicador
+        # Mapear el valor de rot_float (-60 a +60) a la posición x en la barra
+        max_rot_val = 60.0
+        # Limitar el valor de rot_float al rango para que el indicador no se salga de la barra
+        rot_clamp = max(-max_rot_val, min(max_rot_val, rot_float))
+        
+        # Calcular la posición. Si rot_clamp es -60, ratio es -1. Si es +60, ratio es +1. Si es 0, ratio es 0.
+        ratio = rot_clamp / max_rot_val
+        indicador_x = rect_barra_rot_fondo.centerx + ratio * (ancho_barra_rot / 2)
+        
+        # Dibujar un rectángulo de llenado (como termómetro)
+        ancho_llenado = abs(indicador_x - rect_barra_rot_fondo.centerx)
+        if rot_clamp > 0:
+            # Si es positivo, dibujar desde el centro hacia la derecha
+            rect_llenado = pygame.Rect(rect_barra_rot_fondo.centerx, rect_barra_rot_fondo.top, ancho_llenado, alto_barra_rot)
+        else:
+            # Si es negativo, dibujar desde la izquierda (indicador_x) hacia el centro
+            rect_llenado = pygame.Rect(indicador_x, rect_barra_rot_fondo.top, ancho_llenado, alto_barra_rot)
+        
+        pygame.draw.rect(screen, VERDE, rect_llenado)
 
 
         # Mostrar mensajes de estado (NO HAY DATOS / DESCONECTADO)
@@ -3433,7 +3555,27 @@ def main():
                 if cursor_x < rect_input_apikey_google_cloud.right - 2:
                     pygame.draw.line(screen, COLOR_TEXTO_NORMAL, (cursor_x, rect_input_apikey_google_cloud.top + 4), (cursor_x, rect_input_apikey_google_cloud.bottom - 4), 1)
             
-            current_y_servicio += label_apikey_gc_surf.get_height() + padding_y_servicio + 10 # Espacio antes de botones
+            current_y_servicio += label_apikey_gc_surf.get_height() + padding_y_servicio
+
+            # Contraseña Azure SQL
+            label_password_azure_surf = font.render(TEXTOS[IDIOMA]["etiqueta_password_azure"], True, COLOR_TEXTO_NORMAL)
+            screen.blit(label_password_azure_surf, (rect_ventana_servicio_datos.left + padding_x_servicio, current_y_servicio))
+            
+            rect_input_password_azure = pygame.Rect(rect_ventana_servicio_datos.left + padding_x_servicio + label_password_azure_surf.get_width() + 5, current_y_servicio -2, input_width_servicio, font.get_height() + 4)
+            globals()['rect_input_password_azure'] = rect_input_password_azure
+
+            color_fondo_input_pwd = pygame.Color('lightskyblue1') if input_servicio_activo == "password_azure" else COLOR_INPUT_FONDO
+            pygame.draw.rect(screen, color_fondo_input_pwd, rect_input_password_azure)
+            pygame.draw.rect(screen, COLOR_INPUT_BORDE, rect_input_password_azure, 1)
+            input_pwd_surf = font.render("*" * len(input_password_azure_str), True, COLOR_TEXTO_NORMAL)
+            screen.blit(input_pwd_surf, (rect_input_password_azure.left + 5, rect_input_password_azure.top + 2))
+
+            if input_servicio_activo == "password_azure" and cursor_visible:
+                cursor_x = rect_input_password_azure.left + 5 + input_pwd_surf.get_width()
+                if cursor_x < rect_input_password_azure.right - 2:
+                    pygame.draw.line(screen, COLOR_TEXTO_NORMAL, (cursor_x, rect_input_password_azure.top + 4), (cursor_x, rect_input_password_azure.bottom - 4), 1)
+
+            current_y_servicio += label_password_azure_surf.get_height() + padding_y_servicio + 10 # Espacio antes de botones
 
             # Botones Guardar y Mostrar Consola
             button_servicio_width = 150 # Un poco más ancho para "Mostrar Consola"
@@ -3474,7 +3616,7 @@ def main():
         
         elif mostrar_ventana_test_serial:
             font_para_test = pygame.font.Font(None, 22)
-            draw_test_window(screen, font_para_test, datos_test_serial_buffer)
+            draw_test_window(screen, font_para_test, datos_test_serial_buffer, copy_success_message)
 
 
         pygame.display.flip()
@@ -3560,9 +3702,9 @@ def draw_console_window(screen, font_console, buffer_datos, copy_message=None):
         if current_y_text + line_height > area_texto_y + area_texto_height: # No dibujar fuera del área
             break
 # --- Fin de la nueva función ---
-def draw_test_window(screen, font_test, buffer_datos):
+def draw_test_window(screen, font_test, buffer_datos, copy_message=None):
     """Dibuja la ventana de visualización de datos de prueba del puerto serie."""
-    global rect_ventana_test_serial, rect_boton_cerrar_test_serial
+    global rect_ventana_test_serial, rect_boton_cerrar_test_serial, rect_boton_copiar_test_serial
 
     ventana_test_width = 600
     ventana_test_height = 400
@@ -3573,6 +3715,7 @@ def draw_test_window(screen, font_test, buffer_datos):
     COLOR_FONDO_TEST = (30, 30, 30)
     COLOR_BORDE_TEST = (80, 80, 80)
     COLOR_TEXTO_TEST = (0, 255, 0) # Texto verde para look "terminal"
+    COLOR_BOTON_FONDO_TEST = (50, 50, 50)
 
     pygame.draw.rect(screen, COLOR_FONDO_TEST, rect_ventana_test_serial)
     pygame.draw.rect(screen, COLOR_BORDE_TEST, rect_ventana_test_serial, 2)
@@ -3581,12 +3724,30 @@ def draw_test_window(screen, font_test, buffer_datos):
     screen.blit(titulo_test_surf, (rect_ventana_test_serial.centerx - titulo_test_surf.get_width() // 2, rect_ventana_test_serial.top + 10))
 
     rect_boton_cerrar_test_serial = pygame.Rect(rect_ventana_test_serial.right - 30, rect_ventana_test_serial.top + 5, 25, 25)
-    pygame.draw.rect(screen, (50, 50, 50), rect_boton_cerrar_test_serial)
+    pygame.draw.rect(screen, COLOR_BOTON_FONDO_TEST, rect_boton_cerrar_test_serial)
     cerrar_text_test = font_test.render("X", True, COLOR_TEXTO_TEST)
     screen.blit(cerrar_text_test, cerrar_text_test.get_rect(center=rect_boton_cerrar_test_serial.center))
+    
+    # Botón Copiar
+    btn_copiar_width = 100
+    btn_copiar_height = 30
+    rect_boton_copiar_test_serial = pygame.Rect(
+        rect_ventana_test_serial.left + 10,
+        rect_ventana_test_serial.bottom - btn_copiar_height - 10,
+        btn_copiar_width,
+        btn_copiar_height
+    )
+    pygame.draw.rect(screen, COLOR_BOTON_FONDO_TEST, rect_boton_copiar_test_serial)
+    copiar_text_surf = font_test.render("Copiar", True, COLOR_TEXTO_TEST)
+    screen.blit(copiar_text_surf, copiar_text_surf.get_rect(center=rect_boton_copiar_test_serial.center))
+
+    # Mensaje de confirmación de copiado
+    if copy_message:
+        copy_msg_surf = font_test.render(copy_message, True, VERDE)
+        screen.blit(copy_msg_surf, (rect_boton_copiar_test_serial.right + 10, rect_boton_copiar_test_serial.centery - copy_msg_surf.get_height() // 2))
 
     area_texto_y = rect_ventana_test_serial.top + titulo_test_surf.get_height() + 20
-    area_texto_height = rect_ventana_test_serial.height - (titulo_test_surf.get_height() + 30)
+    area_texto_height = rect_ventana_test_serial.height - (titulo_test_surf.get_height() + 30) - (btn_copiar_height + 20)
     
     line_height = font_test.get_linesize()
     max_lines_display = area_texto_height // line_height
@@ -3602,6 +3763,14 @@ def draw_test_window(screen, font_test, buffer_datos):
 # Punto de entrada del programa
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
 
 
 
