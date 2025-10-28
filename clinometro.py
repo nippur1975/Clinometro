@@ -14,62 +14,12 @@ from PIL import Image
 import pystray
 import time
 import sys # Necesario para sys._MEIPASS
-
-# --- Funciones para el inicio automático en Windows ---
-try:
-    import winreg
-    IS_WINDOWS = True
-except ImportError:
-    IS_WINDOWS = False
-
-def is_registered_for_startup():
-    """Verifica si ya está registrado en el inicio de Windows."""
-    if not IS_WINDOWS:
-        return True # Asumir como "registrado" en sistemas no-Windows para no hacer nada.
-    try:
-        run_key = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        app_name = "Clinometro"
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, run_key, 0, winreg.KEY_READ) as key:
-            # Simplemente verificar si el valor existe. No necesitamos comparar la ruta.
-            winreg.QueryValueEx(key, app_name)
-            return True
-    except FileNotFoundError:
-        return False
-    except Exception as e:
-        print(f"[WARN] Error al verificar registro de inicio: {e}")
-        return False # Asumir que no está registrado si hay un error.
-
-def add_to_startup():
-    """Registra el programa para que se ejecute al inicio."""
-    if not IS_WINDOWS or not getattr(sys, 'frozen', False):
-        # No hacer nada si no es Windows o no está compilado (ejecutable).
-        return
-
-    try:
-        exe_path = sys.executable
-        run_key = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        app_name = "Clinometro"
-
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, run_key, 0, winreg.KEY_SET_VALUE) as key:
-            winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, f'"{exe_path}"') # Añadir comillas por si la ruta tiene espacios
-        print(f"[INFO] {app_name} agregado al inicio de Windows.")
-    except Exception as e:
-        print(f"[ERROR] No se pudo agregar al inicio: {e}")
-
-# --- Registro automático (solo si no estaba antes) ---
-if IS_WINDOWS and getattr(sys, 'frozen', False) and not is_registered_for_startup():
-    add_to_startup()
-
-
+import pyodbc
 
 # Función para obtener la ruta correcta a los recursos (para PyInstaller)
 # ESTA ES LA UBICACIÓN CORRECTA, AL PRINCIPIO
 def resource_path(relative_path):
-    """
-    Devuelve la ruta absoluta al recurso.
-    Funciona correctamente tanto en entorno de desarrollo (.py)
-    como en ejecutable (.exe) generado con PyInstaller.
-    """
+  
     try:
         base_path = sys._MEIPASS  # carpeta temporal de PyInstaller
     except Exception:
@@ -95,206 +45,8 @@ def get_persistent_data_path(filename: str) -> str:
     else:
         # Running in a normal Python environment (development)
         application_path = os.path.dirname(os.path.abspath(__file__))
-        # print(f"INFO: Running in development mode (get_persistent_data_path), application_path: {application_path}") # Opcional: para depuración
-    
-    # Consider creating a subdirectory for application data if it doesn't exist
-    # data_dir = os.path.join(application_path, "LalitoData")
-    # if not os.path.exists(data_dir):
-    #     try:
-    #         os.makedirs(data_dir)
-    #     except OSError as e:
-    #         print(f"ERROR: Could not create data directory {data_dir}: {e}")
-    #         # Fallback to application_path if directory creation fails
-    #         return os.path.join(application_path, filename)
-    # return os.path.join(data_dir, filename)
-    
-    # Por ahora, guardaremos directamente en application_path para simplificar.
-    # Si se desea un subdirectorio, descomentar el bloque anterior y ajustar.
+        
     return os.path.join(application_path, filename)
-
-import hashlib # Para generar la clave de licencia
-import uuid    # Para el identificador de máquina
-try:
-    import pyperclip # Para la funcionalidad de pegar
-    PYPERCLIP_AVAILABLE = True
-except ImportError:
-    PYPERCLIP_AVAILABLE = False
-    print("Advertencia: Biblioteca 'pyperclip' no encontrada. La funcionalidad de pegar no estará disponible.")
-
-try:
-    import tkinter as tk
-    from tkinter import filedialog
-    TKINTER_AVAILABLE = True
-except ImportError:
-    TKINTER_AVAILABLE = False
-    print("Advertencia: Biblioteca 'tkinter' no encontrada. La selección de archivo de licencia no estará disponible.")
-
-# --- Constantes para la Licencia ---
-LICENSE_FILE = get_persistent_data_path("license.json") # MODIFICADO
-TRIAL_INFO_FILE = get_persistent_data_path("trial_info.json") # MODIFICADO
-SECRET_KEY = "my_super_secret_clinometer_key" # ¡¡ESTA CLAVE DEBE SER IDÉNTICA A LA USADA EN EL GENERADOR DE LICENCIAS!!
-SERVER_URL = "https://nippur.pythonanywhere.com"
-ACTIVATED_SUCCESSFULLY = False # Variable global para controlar el estado de activación en la sesión actual
-PROGRAM_MODE = "LOADING" # Posibles valores: "LOADING", "LICENSED", "GRACE_PERIOD", "TRIAL_EXPIRED", "ACTIVATION_UI_VISIBLE"
-CURSOR_BLINK_INTERVAL = 500 # milisegundos, para el cursor en el campo de activación
-grace_period_start_time_obj: datetime | None = None # Para almacenar el objeto datetime UTC del inicio del trial
-
-
-# --- Funciones de Gestión de Trial ---
-def load_trial_info() -> dict | None:
-    """Carga la información del periodo de gracia desde trial_info.json."""
-    if not os.path.exists(TRIAL_INFO_FILE):
-        return None
-    try:
-        with open(TRIAL_INFO_FILE, 'r') as f:
-            data = json.load(f)
-            return data
-    except (IOError, json.JSONDecodeError):
-        return None
-
-def save_trial_info(timestamp_utc_str: str):
-    """Guarda el timestamp de inicio del periodo de gracia."""
-    data = {"grace_period_start_timestamp_utc": timestamp_utc_str}
-    try:
-        with open(TRIAL_INFO_FILE, 'w') as f:
-            json.dump(data, f, indent=4)
-    except IOError:
-        print(f"Error al guardar la información de trial en {TRIAL_INFO_FILE}")
-
-def delete_trial_info():
-    """Elimina el archivo trial_info.json si existe."""
-    try:
-        if os.path.exists(TRIAL_INFO_FILE):
-            os.remove(TRIAL_INFO_FILE)
-    except OSError as e:
-        print(f"Error al eliminar {TRIAL_INFO_FILE}: {e}")
-
-# --- Funciones de Licencia (adaptadas de license_manager.py) ---
-def get_machine_specific_identifier() -> tuple[str, str]:
-    """
-    Genera un identificador de máquina completo (para la lógica de licencia) 
-    y un ID corto para mostrar al usuario.
-    """
-    try:
-        mac_num = uuid.getnode()
-        if mac_num != uuid.getnode() or mac_num == 0: # Comprobación más robusta
-            try:
-                import socket
-                hostname_hash = hashlib.sha1(socket.gethostname().encode()).hexdigest()
-                internal_id_str = hostname_hash
-                print("Advertencia: No se pudo obtener la MAC address de forma fiable. Usando ID derivado del hostname.")
-            except:
-                internal_id_str = str(uuid.uuid4())
-                print("Advertencia: No se pudo obtener MAC ni ID de hostname. Usando UUID aleatorio como identificador interno.")
-        else:
-            internal_id_str = ':'.join(('%012X' % mac_num)[i:i+2] for i in range(0, 12, 2))
-    except Exception as e:
-        print(f"Error obteniendo MAC/UUID: {e}. Usando UUID aleatorio como identificador interno.")
-        internal_id_str = str(uuid.uuid4())
-
-    # display_id = hashlib.sha1(internal_id_str.encode('utf-8')).hexdigest()[:6].upper() # Modificación solicitada
-    display_id = internal_id_str # Mostrar el ID completo
-    
-    return internal_id_str, display_id
-
-MACHINE_ID, _ = get_machine_specific_identifier()
-
-def generate_license_key(user_identifier: str) -> str:
-    m = hashlib.sha256()
-    m.update(user_identifier.encode('utf-8'))
-    m.update(SECRET_KEY.encode('utf-8'))
-    return m.hexdigest()[:32]
-
-def store_license_data(license_key: str, internal_machine_id: str):
-    data = {
-        "license_key": license_key,
-        "machine_identifier": internal_machine_id 
-    }
-    try:
-        with open(LICENSE_FILE, 'w') as f:
-            json.dump(data, f, indent=4)
-    except IOError:
-        print(f"Error al guardar la licencia en {LICENSE_FILE}")
-
-def load_license_data() -> dict | None:
-    if not os.path.exists(LICENSE_FILE):
-        return None
-    try:
-        with open(LICENSE_FILE, 'r') as f:
-            data = json.load(f)
-            return data
-    except (IOError, json.JSONDecodeError):
-        return None
-
-def verify_license_key(provided_license_key: str, internal_machine_id: str) -> bool:
-    expected_license_key = generate_license_key(internal_machine_id) # ya es minúscula
-    return provided_license_key.lower() == expected_license_key
-
-def check_license_status() -> bool:
-    """
-    Comprueba el estado de la licencia almacenada.
-    Devuelve True si la licencia es válida, False en caso contrario.
-    """
-    global ACTIVATED_SUCCESSFULLY
-    if ACTIVATED_SUCCESSFULLY:
-        return True
-
-    license_data = load_license_data()
-    if not license_data:
-        return False
-
-    stored_key = license_data.get("license_key")
-    stored_identifier = license_data.get("machine_identifier")
-
-    if not stored_key or not stored_identifier:
-        return False
-
-    current_internal_id, _ = get_machine_specific_identifier()
-    if stored_identifier != current_internal_id:
-        print("Advertencia: La licencia almacenada no corresponde a este identificador de máquina.")
-        return False
-
-    if verify_license_key(stored_key, stored_identifier):
-        ACTIVATED_SUCCESSFULLY = True
-        return True
-    else:
-        print("Advertencia: La clave de licencia almacenada es inválida para el identificador de máquina guardado.")
-        return False
-
-def save_id_to_file(display_id: str, filename="machine_id.txt"):
-    """Guarda el Display ID en un archivo de texto en el directorio del script."""
-    filepath = resource_path(filename) # Guardar junto al ejecutable/script
-    try:
-        with open(filepath, 'w') as f:
-            f.write(f"Su ID de Máquina para la activación es: {display_id}\n")
-            f.write("Por favor, proporcione este ID al administrador para obtener su clave de licencia.")
-        print(f"ID de Máquina guardado en: {filepath}")
-        return True
-    except IOError as e:
-        print(f"Error al guardar el ID de máquina en archivo: {e}")
-        return False
-
-def solicitar_licencia():
-    """Envía el machine_id al servidor para registrar o consultar el estado."""
-    try:
-        resp = requests.post(f"{SERVER_URL}/api/solicitar_licencia", json={"machine_identifier": MACHINE_ID}, timeout=5)
-        return resp.json()
-    except Exception as e:
-        return {"error": f"No se pudo contactar al servidor: {e}"}
-
-def descargar_licencia():
-    """Descarga license.json si ya fue aprobada por el administrador."""
-    try:
-        resp = requests.post(f"{SERVER_URL}/api/descargar_licencia", json={"machine_identifier": MACHINE_ID}, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json().get("license")
-            with open(LICENSE_FILE, "w") as f:
-                json.dump(data, f, indent=4)
-            return True, data
-        else:
-            return False, resp.json()
-    except Exception as e:
-        return False, {"error": f"No se pudo contactar al servidor: {e}"}
 
 def on_open(icon, item):
     """Muestra la ventana principal."""
@@ -314,26 +66,6 @@ def setup_tray_icon():
     icon = pystray.Icon("Lalito", image, "Lalito Clinometer", menu)
     icon.run()
 
-def verificar_y_obtener_licencia():
-    """Verifica si hay licencia local, y si no, la solicita y espera aprobación."""
-    # Si ya existe license.json local, usarla directamente
-    if os.path.exists(LICENSE_FILE):
-        print(f"Licencia ya existente: {LICENSE_FILE}")
-        return True
-
-    print("Solicitando licencia al servidor...")
-    estado = solicitar_licencia()
-    print(f"Estado de solicitud: {estado}")
-
-    # No esperar aquí, solo intentar descargar una vez.
-    ok, data = descargar_licencia()
-    if ok:
-        print("Licencia aprobada y descargada:", data)
-        return True
-    else:
-        print("La licencia no está lista para descargar.")
-        return False
-
 # Definimos colores base
 NEGRO = (0, 0, 0)
 BLANCO = (255, 255, 255)
@@ -344,6 +76,7 @@ AZUL = (0, 0, 255)
 # Constantes globales
 ALTURA_BARRA_HERRAMIENTAS = 30
 IDIOMA = "es"  # Por defecto en español ("es" o "en")
+CURSOR_BLINK_INTERVAL = 500 # milisegundos, para el cursor en el campo de activación
 
 # Diccionarios de textos para multiidioma
 TEXTOS = {
@@ -360,7 +93,7 @@ TEXTOS = {
         "velocidad": "VELOCIDAD",
         "pitch": "PITCH",
         "roll": "ROLL ",
-        "altitud": "ALTITUD", # Nueva entrada
+        "altitud": "ALTITUD",
         "no_datos": "NO HAY DATOS NMEA",
         "desconectado": "Puerto NMEA desconectado",
         "titulo_config": "Configuración Puerto",
@@ -377,41 +110,24 @@ TEXTOS = {
         "titulo_servicio_datos": "Configurar Servicio de Datos",
         "etiqueta_servicio": "Servicio:",
         "opcion_thingspeak": "ThingSpeak",
-        "opcion_google_cloud": "AZURE SQL",
+        "opcion_google_cloud": "Azure SQL",
         "etiqueta_apikey_thingspeak": "API Key ThingSpeak:",
-        "etiqueta_apikey_google_cloud": "NOMBRE BARCO:",
+        "etiqueta_apikey_google_cloud": "Nombre del Barco:",
         "titulo_password_servicio": "Ingrese Contraseña",
         "etiqueta_password": "Contraseña:",
         "boton_entrar": "Entrar",
         "password_incorrecta": "Contraseña incorrecta!",
-        "menu_activar": "ACTIVAR PRODUCTO",
-        "trial_expired_message": "TIEMPO DE PRUEBA EXPIRADO",
-        "data_disabled_trial": "Deshabilitado en prueba",
         "boton_mostrar_consola": "Mostrar Consola",
-        "activation_required": "Activación Requerida",
-        "machine_id_label": "Su ID de Máquina:",
-        "copy_id_button": "Copiar ID",
-        "license_key_label": "Clave de Licencia:",
-        "use_license_file_button": "Usar Archivo Lic.",
-        "save_id_button": "Guardar ID",
-        "activate_button": "Activar",
-        "exit_button": "Salir",
-        "get_license_online_button": "Obtener Licencia Online",
-        "invalid_key_message": "Clave de licencia inválida. Intente de nuevo.",
-        "id_copied_message": "ID de Máquina copiado.",
-        "id_save_error_message": "Error al guardar ID.",
-        "id_saved_message": "ID guardado en machine_id.txt",
-        "online_license_fail_message": "No se pudo obtener la licencia en línea.",
+        "boton_test": "Test",
         "about_title": "Acerca de Lalito",
         "about_line1": "NMEA Data Reader Program",
         "about_line2": "Versión: 1.0",
         "about_line3": "Realizado por: Hdelacruz",
         "about_line4": "Email: hugo_delacruz@hotmail.com",
         "about_line5": "2025",
-        "menu_simulador_on": "MODO SIMULADOR ON",
-        "menu_simulador_off": "MODO SIMULADOR OFF",
-        "watermark_simulador": "MODO SIMULADOR",
-        
+        "rot": "ROT",
+        "sentina1": "Sentina 1",
+        "sentina2": "Sentina 2",
     },
     "en": {
         "titulo_ventana": "Lalito",
@@ -426,7 +142,7 @@ TEXTOS = {
         "velocidad": "SPEED     ",
         "pitch": "PITCH",
         "roll": "ROLL ",
-        "altitud": "ALTITUDE", # Nueva entrada
+        "altitud": "ALTITUDE",
         "no_datos": "NO NMEA DATA",
         "desconectado": "NMEA port disconnected",
         "titulo_config": "Serial Settings",
@@ -443,41 +159,24 @@ TEXTOS = {
         "titulo_servicio_datos": "Data Service Settings",
         "etiqueta_servicio": "Service:",
         "opcion_thingspeak": "ThingSpeak",
-        "opcion_google_cloud": "Google Cloud",
+        "opcion_google_cloud": "Azure SQL",
         "etiqueta_apikey_thingspeak": "ThingSpeak API Key:",
-        "etiqueta_apikey_google_cloud": "Google Cloud API Key:",
+        "etiqueta_apikey_google_cloud": "Ship Name:",
         "titulo_password_servicio": "Enter Password",
         "etiqueta_password": "Password:",
         "boton_entrar": "Enter",
         "password_incorrecta": "Incorrect Password!",
-        "menu_activar": "ACTIVATE PRODUCT",
-        "trial_expired_message": "TRIAL PERIOD EXPIRED",
-        "data_disabled_trial": "Disabled in trial",
         "boton_mostrar_consola": "Show Console",
-        "activation_required": "Activation Required",
-        "machine_id_label": "Your Machine ID:",
-        "copy_id_button": "Copy ID",
-        "license_key_label": "License Key:",
-        "use_license_file_button": "Use License File",
-        "save_id_button": "Save ID",
-        "activate_button": "Activate",
-        "exit_button": "Exit",
-        "get_license_online_button": "Get License Online",
-        "invalid_key_message": "Invalid license key. Please try again.",
-        "id_copied_message": "Machine ID copied.",
-        "id_save_error_message": "Error saving ID.",
-        "id_saved_message": "ID saved to machine_id.txt",
-        "online_license_fail_message": "Could not get license online.",
+        "boton_test": "Test",
         "about_title": "About Lalito",
         "about_line1": "NMEA Data Reader Program",
         "about_line2": "Version: 1.0",
         "about_line3": "Made by: Hdelacruz",
         "about_line4": "Email: hugo_delacruz@hotmail.com",
         "about_line5": "2025",
-        "menu_simulador_on": "SIMULATOR MODE ON",
-        "menu_simulador_off": "SIMULATOR MODE OFF",
-        "watermark_simulador": "SIMULATOR MODE",
-       
+        "rot": "ROT",
+        "sentina1": "Bilge 1",
+        "sentina2": "Bilge 2",
     }
 }
 
@@ -485,33 +184,21 @@ TEXTOS = {
 API_KEY_THINGSPEAK = "5TRR6EXF6N5CZF54"
 THINGSPEAK_URL = "https://api.thingspeak.com/update"
 
-# --- Variables y datos para el modo Simulador ---
-simulador_activado = False
-sim_initialized = False
-sim_center_lat = 0.0
-sim_center_lon = 0.0
-sim_angle_on_circle_deg = 0.0
-sim_radius_meters = 400.0 # 800m de diámetro
-
+# Configuración para Azure SQL
+AZURE_SQL_SERVER = "srv-db-east-us-estabilidadep.database.windows.net"
+AZURE_SQL_DATABASE = "db_estabilidadep_prd"
+AZURE_SQL_USER = "svc_writer_ep"
+AZURE_SQL_PASSWORD = "" # El usuario final anadira la contrasena aqui
 
 # Configuración para logging y ThingSpeak
 API_KEY_THINGSPEAK = "5TRR6EXF6N5CZF54"
 THINGSPEAK_URL = "https://api.thingspeak.com/update"
 
-# Comenta o elimina las siguientes dos líneas:
-# CSV_FILENAME = "nmea_log.csv"
-# ALARM_LOG_FILENAME = "alarm_log.csv" 
+
 
 # Añade estas nuevas definiciones:
 CSV_FILENAME = get_persistent_data_path("nmea_log.csv") # MODIFICADO
 ALARM_LOG_FILENAME = get_persistent_data_path("alarm_log.csv") # MODIFICADO
-
-INTERVALO_ENVIO_DATOS_S = 15 
-# ... (el resto de constantes sigue igual)
-
-
-
-
 
 INTERVALO_ENVIO_DATOS_S = 15
 INTERVALO_REPETICION_ALARMA_ROLL_S = 5
@@ -549,6 +236,11 @@ ts_timestamp_str = "N/A"
 altitude_str = "N/A" # Nueva variable para altitud
 ts_altitude_float = 0.0 # Nueva variable para altitud numérica para ThingSpeak
 ultima_vez_envio_datos = 0
+
+# Variables para ROT y sentinas
+rot_float = 0.0
+switch1_status = "N/A"
+switch2_status = "N/A"
 
 # Variables de estado de alarmas
 alarma_roll_babor_activa = False
@@ -864,9 +556,7 @@ def parse_gga(sentence):
     global ultima_vez_datos_recibidos, altitude_str, ts_altitude_float # Añadir ts_altitude_float
     try:
         parts = sentence.split(',')
-        # GGA tiene al menos 15 campos si está completo con checksum
-        # parts[9] es altitud, parts[10] es unidad (M)
-        # Necesitamos asegurar que parts[9] y parts[10] existan y parts[9] no esté vacío.
+       
         if len(parts) > 10 and parts[9]: # Verificar que el campo de altitud y su unidad existan
             lat_raw_val = parts[2]
             lat_dir = parts[3]
@@ -1072,6 +762,35 @@ def parse_gpzda(sentence):
     except Exception as e:
         print(f"Error inesperado en parse_gpzda: {e}. Sentencia: {sentence}")
 
+def parse_phdl(sentence):
+    """Parsea la sentencia propietaria $PHDL para el estado de las sentinas."""
+    global switch1_status, switch2_status, ultima_vez_datos_recibidos
+    try:
+        parts = sentence.split(',')
+        if len(parts) >= 6 and parts[0] == '$PHDL' and parts[1] == 'SWITCH':
+            # Asumiendo que parts[2] es el índice y parts[3] es el estado
+            if parts[2] == '1':
+                switch1_status = parts[3].upper() # ON/OFF
+            if parts[4] == '2':
+                switch2_status = parts[5].split('*')[0].upper() # Limpiar checksum
+            
+            ultima_vez_datos_recibidos = pygame.time.get_ticks()
+    except (IndexError, ValueError) as e:
+        print(f"Error parseando sentencia PHDL: {e}. Sentencia: {sentence}")
+
+def parse_rot(sentence):
+    """Parsea la sentencia ROT para la tasa de giro."""
+    global rot_float, ultima_vez_datos_recibidos
+    try:
+        parts = sentence.split(',')
+        if len(parts) >= 2 and parts[0].endswith('ROT'):
+            rot_value_str = parts[1]
+            if rot_value_str:
+                rot_float = float(rot_value_str)
+                ultima_vez_datos_recibidos = pygame.time.get_ticks()
+    except (IndexError, ValueError) as e:
+        print(f"Error parseando sentencia ROT: {e}. Sentencia: {sentence}")
+
 def reset_ui_data():
     global latitude_str, longitude_str, speed_str, heading_str
     global att_pitch_str, att_roll_str, att_heading_str, altitude_str
@@ -1100,6 +819,11 @@ def reset_ui_data():
     ts_heading_float = 0.0
     ts_timestamp_str = "N/A"
     ts_altitude_float = 0.0 # Resetear ts_altitude_float
+
+    # Resetear ROT y sentinas
+    rot_float = 0.0
+    switch1_status = "N/A"
+    switch2_status = "N/A"
 
     # Resetear estados de alarma
     alarma_roll_babor_activa = False
@@ -1130,7 +854,7 @@ def init_csv():
         with open(CSV_FILENAME, 'a', newline='') as f: 
             if not file_exists or is_empty:
                 writer = csv.writer(f)
-                writer.writerow(["FechaHora", "Pitch", "Roll", "Latitud", "Longitud", "Velocidad", "Rumbo"])
+                writer.writerow(["ShipID", "Pitch", "Roll", "Latitud", "Longitud", "Velocidad", "Rumbo", "ROT", "Switch1", "Switch2"])
                 print(f"DEBUG: init_csv - Cabecera escrita en: {CSV_FILENAME}")
             else:
                 print(f"DEBUG: init_csv - Archivo ya existe y no está vacío: {CSV_FILENAME}")
@@ -1183,22 +907,21 @@ def guardar_alarma_csv(timestamp, tipo_alarma, estado_alarma, valor_actual, umbr
         print(f"[ERROR] No se pudo escribir en {ALARM_LOG_FILENAME}: {e}")
 
 
-
-
-
-
 def guardar_csv():
     try:
         with open(CSV_FILENAME, 'a', newline='') as f: 
             writer = csv.writer(f)
             writer.writerow([
-                ts_timestamp_str, 
+                API_KEY_GOOGLE_CLOUD, # Nombre del barco
                 ts_pitch_float, 
                 ts_roll_float, 
                 ts_lat_decimal, 
                 ts_lon_decimal, 
                 ts_speed_float, 
-                ts_heading_float
+                ts_heading_float,
+                rot_float,
+                switch1_status,
+                switch2_status
             ])
     except Exception as e:
         print(f"[ERROR] No se pudo escribir en {CSV_FILENAME} (guardar_csv): {e}")
@@ -1267,7 +990,8 @@ def enviar_thingspeak():
         'field5': ts_speed_float, 
         'field6': ts_heading_float, 
         'field7': ts_altitude_float,
-        'field8': estado_alarma_para_thingspeak
+        'field8': rot_float,
+        'status': f"Sentina1: {switch1_status}, Sentina2: {switch2_status}, Alarma: {estado_alarma_para_thingspeak}"
     }
     
     # Crear y lanzar el hilo
@@ -1275,7 +999,227 @@ def enviar_thingspeak():
     thread.daemon = True # El hilo no impedirá que el programa se cierre
     thread.start()
 
-def draw_activation_window(screen, display_id_str, input_key_str, error_message=None, input_active: bool = False, show_cursor: bool = False):
+def worker_enviar_sql(payload):
+    """Esta función se ejecuta en un hilo separado para no bloquear la UI."""
+    global network_available
+
+    # --- Detección automática de Driver ODBC ---
+    sql_server_driver = None
+    try:
+        available_drivers = pyodbc.drivers()
+        # Palabras clave para buscar, en orden de preferencia (de más nuevo a más antiguo)
+        preferred_keywords = ["ODBC Driver 18", "ODBC Driver 17", "Native Client", "SQL Server"]
+        
+        for keyword in preferred_keywords:
+            for driver in available_drivers:
+                if keyword in driver:
+                    sql_server_driver = driver
+                    break  # Encontramos el mejor driver posible, salir del bucle interno
+            if sql_server_driver:
+                break # Salir del bucle externo también
+    
+    except Exception as e:
+        msg_sql_err = f"Azure SQL: Error al listar drivers ODBC: {e}"
+        print(f"[ERROR] {msg_sql_err}")
+        agregar_a_consola(msg_sql_err)
+        network_available = False
+        return
+
+    if not sql_server_driver:
+        msg_sql_err = "Azure SQL: No se encontró un driver ODBC para SQL Server."
+        print(f"[ERROR] {msg_sql_err}")
+        print(f"INFO: Drivers disponibles en el sistema: {available_drivers}")
+        agregar_a_consola(msg_sql_err)
+        agregar_a_consola(f"Drivers: {available_drivers}") # Añadir a la consola para depuración del usuario
+        network_available = False
+        return
+    # --- Fin de la detección automática ---
+
+    conn = None
+    try:
+        conn_str = (
+            f"DRIVER={{{sql_server_driver}}};"
+            f"SERVER={AZURE_SQL_SERVER};"
+            f"DATABASE={AZURE_SQL_DATABASE};"
+            f"UID={AZURE_SQL_USER};"
+            f"PWD={AZURE_SQL_PASSWORD};"
+        )
+        print(f"INFO: Intentando conectar con el driver detectado: {sql_server_driver}")
+        conn = pyodbc.connect(conn_str, timeout=10)
+        print(f"✅ Conexión exitosa con el driver: {sql_server_driver}")
+    
+    except pyodbc.Error as ex:
+        msg_sql_err = f"Azure SQL: Fallo la conexión con driver '{sql_server_driver}'."
+        print(f"[ERROR] {msg_sql_err} - {ex}")
+        agregar_a_consola(f"Azure SQL: Fallo conexión. Verifique red y contraseña.")
+        network_available = False
+        return # Salir si la conexión falla
+    except Exception as e:
+        # Captura de otros posibles errores en la conexión
+        msg_sql_err = f"Azure SQL: Error inesperado al conectar: {e}"
+        print(f"[ERROR] {msg_sql_err}")
+        agregar_a_consola(msg_sql_err)
+        network_available = False
+        return
+
+    try:
+        with conn.cursor() as cursor:
+            sql_insert = """
+            INSERT INTO [dbo].[estabilidad] 
+            (ship_id, timestamp, pitch, roll, latitude, longitude, speed, heading, altitude, alarm_status, rot, switch1, switch2) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            cursor.execute(sql_insert, 
+                           payload['ship_id'], 
+                           payload['timestamp'], 
+                           payload['pitch'], 
+                           payload['roll'], 
+                           payload['latitude'], 
+                           payload['longitude'], 
+                           payload['speed'], 
+                           payload['heading'], 
+                           payload['altitude'], 
+                           payload['alarm_status'],
+                           payload['rot'],
+                           payload['switch1'],
+                           payload['switch2'])
+            conn.commit()
+            msg_sql = "Azure SQL: Conexión OK y datos enviados."
+            print(f"[OK] {msg_sql}")
+            agregar_a_consola(msg_sql)
+            network_available = True
+    except pyodbc.Error as ex:
+        print(f"❌ Error al interactuar con la base de datos: {ex}")
+        msg_sql_err = f"Azure SQL: Error de base de datos - {ex}"
+        print(f"[ERROR] {msg_sql_err}")
+        agregar_a_consola(msg_sql_err)
+        network_available = False
+    except Exception as e:
+        print(f"❌ Error inesperado de SQL: {e}")
+        msg_sql_conn_err = f"Azure SQL: Error de conexión - {e}"
+        print(f"[ERROR] {msg_sql_conn_err}")
+        agregar_a_consola(msg_sql_conn_err)
+        network_available = False
+    finally:
+        if conn:
+            conn.close()
+
+def enviar_y_guardar_datos_periodicamente():
+    """Guarda en CSV y envía a servicios en la nube a intervalos regulares."""
+    global ultima_vez_envio_datos
+
+    if time.time() - ultima_vez_envio_datos < INTERVALO_ENVIO_DATOS_S:
+        return
+
+    # Solo proceder si hay datos válidos
+    if not (serial_port_available and not nmea_data_stale):
+        ultima_vez_envio_datos = time.time() # Resetear timer para no reintentar inmediatamente
+        return
+
+    # Preparar estado de alarma para logging y envío
+    partes_alarma = []
+    if alarma_roll_babor_activa: partes_alarma.append("B")
+    if alarma_roll_estribor_activa: partes_alarma.append("E")
+    if alarma_pitch_sentado_activa: partes_alarma.append("S")
+    if alarma_pitch_encabuzado_activa: partes_alarma.append("EN")
+    estado_alarma_sql_corto = "+".join(partes_alarma) if partes_alarma else "OK"
+
+    print(f"--- Guardando y Enviando Datos ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---")
+    print(f"Valores: P:{ts_pitch_float}, R:{ts_roll_float}, Lat:{ts_lat_decimal}, Lon:{ts_lon_decimal}, Spd:{ts_speed_float}, Hdg:{ts_heading_float}, Alt:{ts_altitude_float}, Alarma: {estado_alarma_sql_corto}")
+    agregar_a_consola(f"Datos: P:{ts_pitch_float:.1f}, R:{ts_roll_float:.1f}, Lat:{ts_lat_decimal:.4f}, Lon:{ts_lon_decimal:.4f}, Spd:{ts_speed_float:.1f}, Hdg:{ts_heading_float:.0f}, Alarma: {estado_alarma_sql_corto}")
+
+    # Guardar en CSV
+    guardar_csv()
+    agregar_a_consola(f"Guardado en CSV: {CSV_FILENAME}")
+
+    # Enviar a servicio en la nube si hay red
+    if network_available:
+        if SERVICIO_DATOS_ACTUAL == "thingspeak":
+            enviar_thingspeak()
+        elif SERVICIO_DATOS_ACTUAL == "azure_sql":
+            timestamp_final = ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            payload_sql = {
+                'ship_id': API_KEY_GOOGLE_CLOUD,
+                'timestamp': timestamp_final,
+                'pitch': ts_pitch_float, 'roll': ts_roll_float,
+                'latitude': ts_lat_decimal, 'longitude': ts_lon_decimal,
+                'speed': ts_speed_float, 'heading': ts_heading_float,
+                'altitude': ts_altitude_float, 'alarm_status': estado_alarma_sql_corto,
+                'rot': rot_float,
+                'switch1': switch1_status,
+                'switch2': switch2_status
+            }
+            sql_thread = threading.Thread(target=worker_enviar_sql, args=(payload_sql,))
+            sql_thread.daemon = True
+            sql_thread.start()
+    
+    print("---------------------------------------------------\n")
+    ultima_vez_envio_datos = time.time()
+
+def procesar_datos_serie():
+    """Lee y procesa todas las sentencias NMEA disponibles en el puerto serie."""
+    global ser, serial_port_available, nmea_data_stale
+    
+    if not (serial_port_available and ser and ser.is_open):
+        return
+
+    try:
+        if ser.in_waiting > 0:
+            # Leer todos los datos disponibles en el buffer de una vez
+            data_bytes = ser.read(ser.in_waiting)
+            data_str = data_bytes.decode('ascii', errors='replace')
+            
+            # Dividir los datos en líneas. Las sentencias NMEA terminan en \r\n.
+            lines = data_str.split('\r\n')
+            
+            for line in lines:
+                line = line.strip() # Limpiar espacios en blanco adicionales
+                if not line:
+                    continue
+                
+                # Si la ventana de test está abierta, añadir la línea cruda al buffer
+                if mostrar_ventana_test_serial:
+                    if len(datos_test_serial_buffer) >= MAX_LINEAS_TEST_SERIAL:
+                        datos_test_serial_buffer.pop(0)
+                    datos_test_serial_buffer.append(line)
+
+                # Parsear las sentencias NMEA
+                if line.startswith('$GPGLL') or line.startswith('$GNGLL'):
+                    parse_gll(line)
+                elif line.startswith('$GPGGA') or line.startswith('$GNGGA'):
+                    parse_gga(line)
+                elif line.startswith('$GPRMC') or line.startswith('$GNRMC'):
+                    parse_rmc(line)
+                elif line.startswith('$GPVTG') or line.startswith('$GNVTG'):
+                    parse_vtg(line)
+                elif line.startswith('$GPHDT') or line.startswith('$GNHDT') or line.startswith('$HEHDT'):
+                    parse_hdt(line)
+                elif line.startswith('$GPHDG') or line.startswith('$GNHDG'):
+                    parse_hdg(line)
+                elif line.startswith('$PFEC,GPatt'):
+                    parse_pfec_gpatt(line)
+                elif line.startswith('$GPZDA') or line.startswith('$GNZDA'):
+                    parse_gpzda(line)
+                elif line.startswith('$PHDL'):
+                    parse_phdl(line)
+                elif line.endswith('ROT'):
+                    parse_rot(line)
+
+    except serial.SerialException as se:
+        print(f"SerialException durante lectura: {se}. Marcando puerto como desconectado.")
+        if ser:
+            ser.close()
+        ser = None
+        serial_port_available = False
+        reset_ui_data()
+        nmea_data_stale = True
+    except Exception as e:
+        # Errores generales (ej. decode) se ignoran para no detener el bucle,
+        # pero se podría añadir un log si es necesario.
+        print(f"Error general durante lectura/procesamiento NMEA: {e}")
+        pass
+
+def main():
     """Dibuja la ventana de activación de licencia."""
     font_titulo = pygame.font.Font(None, 36)
     font_texto = pygame.font.Font(None, 28)
@@ -1371,11 +1315,6 @@ def draw_activation_window(screen, display_id_str, input_key_str, error_message=
     
     y_botones_fila1 = y_inicio_area_botones + offset_y_bloque_botones
     
-    # El desplazamiento vertical adicional de 10px ha sido eliminado.
-    # y_botones_fila1 += 10 # Eliminado
-
-    # Fila 1: "Usar Archivo Lic." e "Guardar ID"
-    # Anchos definidos
     w_usar_lic = 190 # "Usar Archivo Lic."
     w_guardar_id = 160 # "Guardar ID"
     
@@ -1468,16 +1407,7 @@ def run_activation_sequence(screen, current_internal_id, current_display_id):
 
     cursor_visible = True
     cursor_blink_timer = 0
-    # CURSOR_BLINK_INTERVAL ya es una constante global, o debería serlo, o pasada como arg.
-    # Por ahora, asumimos que es accesible globalmente o la definimos aquí si es local a esta función.
-    # Si es global, no hay problema. Si no, necesita ser definida o pasada.
-# CURSOR_BLINK_INTERVAL = 500 # Ya está definida globalmente en main antes de llamar a esta función.
-# No es necesario redefinirla aquí ni pasarla como argumento si es una constante global del script.
-# Sin embargo, para buena práctica, las constantes usadas por una función deberían estar disponibles en su scope
-# o pasadas como argumento. CURSOR_BLINK_INTERVAL se define en main().
-# Para que esta función sea más autocontenida o si CURSOR_BLINK_INTERVAL no fuera global:
-# Descomentar la siguiente línea o añadir CURSOR_BLINK_INTERVAL como parámetro.
-# CURSOR_BLINK_INTERVAL = 500 # OJO: Si se define aquí, puede haber inconsistencia si se cambia en main.
+
 
     while activation_window_active:
         current_time_millis = pygame.time.get_ticks()
@@ -1607,11 +1537,7 @@ def run_activation_sequence(screen, current_internal_id, current_display_id):
 
 # --- Función para formatear el tiempo restante del periodo de gracia ---
 def format_remaining_grace_time(start_time_utc: datetime | None) -> str | None:
-    """
-    Calcula y formatea el tiempo restante del periodo de gracia.
-    start_time_utc debe ser un objeto datetime aware (UTC).
-    Devuelve un string formateado "HHh MMm SSs" o None si el tiempo expiró o no es válido.
-    """
+
     if start_time_utc is None:
         return None
 
@@ -1730,135 +1656,11 @@ def main():
     global mostrar_ventana_servicio_datos, mostrar_ventana_password_servicio, mostrar_ventana_consola_datos
     global input_puerto_str, input_baudios_idx, puerto_dropdown_activo, baudios_dropdown_activo
     global input_alarma_activo, input_password_str, intento_password_fallido, input_password_activo, input_servicio_activo
-    global ACTIVATED_SUCCESSFULLY
     
-    # Inicializar Pygame Temprano para Ventana de Activación (si es necesario)
     pygame.init() # Asegurar que Pygame esté inicializado
-    dimensiones = [1060, 500] # Altura aumentada de 430 a 500
+    dimensiones = [1060, 600] # Altura aumentada para ROT y LEDs
     screen = pygame.display.set_mode(dimensiones) # Crear la pantalla
     pygame.display.set_caption("Clinómetro") # Título genérico inicial
-
-    # --- Gestión de Licencia y Periodo de Gracia ---
-    global PROGRAM_MODE, ACTIVATED_SUCCESSFULLY, grace_period_start_time_obj # Añadir grace_period_start_time_obj a globales de main
-    
-    if check_license_status(): # check_license_status actualiza ACTIVATED_SUCCESSFULLY
-        PROGRAM_MODE = "LICENSED"
-        delete_trial_info() # Si está licenciado, no necesitamos el archivo de trial
-        print("INFO: Licencia válida encontrada. Programa en modo LICENSED.")
-    else:
-        ACTIVATED_SUCCESSFULLY = False # Asegurar que está False si check_license_status falló
-        trial_data = load_trial_info()
-        if trial_data is None:
-            # No hay licencia y no hay información de trial: Primera vez o trial_info.json borrado
-            # Mostrar ventana de activación
-            PROGRAM_MODE = "ACTIVATION_UI_VISIBLE"
-            print("INFO: No hay licencia válida ni información de trial. Mostrando ventana de activación.")
-            # (El bucle de la ventana de activación se manejará más adelante)
-        else:
-            # Hay información de trial, verificar si el periodo de gracia ha expirado
-            try:
-                start_timestamp_str = trial_data.get("grace_period_start_timestamp_utc")
-                if not start_timestamp_str:
-                    raise ValueError("Timestamp de inicio de trial no encontrado en trial_info.json")
-                
-                # Manejar el formato antiguo incorrecto si existe (ej. "...+00:00Z")
-                if start_timestamp_str.endswith("+00:00Z"):
-                    print(f"DEBUG: Detectado formato de timestamp antiguo '{start_timestamp_str}'. Corrigiendo eliminando 'Z' final.")
-                    start_timestamp_str = start_timestamp_str[:-1] 
-                
-                print(f"DEBUG: Leyendo start_timestamp_str (potencialmente corregido) de trial_info.json: {start_timestamp_str}") # DEBUG
-                start_datetime_utc = datetime.fromisoformat(start_timestamp_str) # Parseo directo
-                
-                # Asegurar que es aware y UTC (fromisoformat con offset ya lo hace aware)
-                if start_datetime_utc.tzinfo is None or start_datetime_utc.tzinfo.utcoffset(start_datetime_utc) != timedelta(0):
-                    print(f"ADVERTENCIA: El timestamp leído de trial_info.json no es UTC o no es aware: {start_datetime_utc}. Forzando a UTC.")
-                    start_datetime_utc = start_datetime_utc.astimezone(timezone.utc) if start_datetime_utc.tzinfo else start_datetime_utc.replace(tzinfo=timezone.utc)
-
-
-                current_datetime_utc = datetime.now(timezone.utc) # Siempre aware UTC
-                
-                print(f"DEBUG: start_datetime_utc (procesado): {start_datetime_utc}") # DEBUG
-                print(f"DEBUG: current_datetime_utc: {current_datetime_utc}") # DEBUG
-                
-                # El bloque if hasattr...else... que causaba IndentationError ha sido eliminado.
-                # La línea current_datetime_utc = datetime.now(timezone.utc) ya está antes y es la correcta.
-
-                grace_period_duration = timedelta(days=1) # 24 horas
-
-                if current_datetime_utc < start_datetime_utc + grace_period_duration:
-                    PROGRAM_MODE = "GRACE_PERIOD"
-                    grace_period_start_time_obj = start_datetime_utc # Poblar la variable global
-                    print(f"INFO: Programa en periodo de gracia. Restante: {start_datetime_utc + grace_period_duration - current_datetime_utc}")
-                else:
-                    PROGRAM_MODE = "TRIAL_EXPIRED"
-                    print("INFO: Periodo de gracia expirado. Programa en modo TRIAL_EXPIRED.")
-            except Exception as e:
-                print(f"ERROR: Error al procesar trial_info.json: {e}. No se pudo determinar el estado del periodo de gracia.")
-                print("INFO: Se mostrará la ventana de activación. El archivo trial_info.json (si existe y causó el error) NO será eliminado para inspección.")
-                # delete_trial_info() # NO borrar el archivo para poder depurar su contenido si es necesario.
-                PROGRAM_MODE = "ACTIVATION_UI_VISIBLE" # Forzar activación.
-
-
-    # --- Bucle de Activación de Licencia (Solo si PROGRAM_MODE es "ACTIVATION_UI_VISIBLE" al inicio) ---
-    proceed_to_main_loop = False
-
-    if PROGRAM_MODE == "LICENSED":
-        ACTIVATED_SUCCESSFULLY = True 
-        proceed_to_main_loop = True
-    
-
-    elif PROGRAM_MODE == "GRACE_PERIOD": # Si estaba en gracia y no activó
-                    proceed_to_main_loop = True # Permite continuar en modo gracia
-                    ACTIVATED_SUCCESSFULLY = True   
-    elif PROGRAM_MODE == "TRIAL_EXPIRED":
-        ACTIVATED_SUCCESSFULLY = False 
-        proceed_to_main_loop = True
-    elif PROGRAM_MODE == "ACTIVATION_UI_VISIBLE":
-        # Obtener IDs solo si vamos a mostrar la ventana
-        internal_id, display_id = get_machine_specific_identifier()
-        # CURSOR_BLINK_INTERVAL ya es global, no se necesita inicializar aquí.
-        # cursor_visible y cursor_blink_timer son locales al bucle de run_activation_sequence.
-        
-        # Llamar a la función refactorizada
-        activation_success = run_activation_sequence(screen, internal_id, display_id)
-
-        if activation_success: # ACTIVATED_SUCCESSFULLY y PROGRAM_MODE ya se actualizan dentro de run_activation_sequence
-            proceed_to_main_loop = True
-        else: # Activación fallida o cerrada por el usuario
-            # Si era la primera vez (no hay trial_info), run_activation_sequence NO inicia el trial al presionar "Salir".
-            # Esa lógica debe estar aquí, después de que la ventana se cierra.
-            if load_trial_info() is None:
-                current_utc_time_for_trial = datetime.now(timezone.utc)
-                save_trial_info(current_utc_time_for_trial.isoformat()) # Guardar en formato ISO estándar (ya incluye offset UTC)
-                grace_period_start_time_obj = current_utc_time_for_trial # Poblar la variable global
-                PROGRAM_MODE = "GRACE_PERIOD"
-                ACTIVATED_SUCCESSFULLY = True # Permitir uso completo en gracia
-                print("INFO: Ventana de activación cerrada/omitida. Iniciando periodo de gracia de 24h.")
-                proceed_to_main_loop = True
-            else:
-                # Si ya había un trial_info (ej. porque el periodo de gracia ya había empezado y se accedió al menú,
-                # o el trial expiró y se accedió al menú), y el usuario cierra sin activar,
-                # el estado no cambia y proceed_to_main_loop dependerá del estado previo.
-                # Si PROGRAM_MODE era TRIAL_EXPIRED, seguirá siéndolo.
-                if PROGRAM_MODE == "TRIAL_EXPIRED": # Si estaba expirado y no activó
-                    proceed_to_main_loop = True # Permite continuar en modo trial
-                    ACTIVATED_SUCCESSFULLY = False
-                elif PROGRAM_MODE == "GRACE_PERIOD": # Si estaba en gracia y no activó
-                     proceed_to_main_loop = True # Permite continuar en modo gracia
-                     ACTIVATED_SUCCESSFULLY = True
-                else: # Otro caso inesperado
-                     proceed_to_main_loop = False
-
-
-    if not proceed_to_main_loop:
-        print("El programa no puede continuar. Verifique el estado de la licencia.")
-        pygame.quit()
-        sys.exit()
-    
-    # Si llegamos aquí, ACTIVATED_SUCCESSFULLY es True para LICENSED y GRACE_PERIOD
-    # o False para TRIAL_EXPIRED (pero proceed_to_main_loop es True para TRIAL_EXPIRED)
-    
-    print(f"INFO: Estado final antes del bucle principal: PROGRAM_MODE = {PROGRAM_MODE}, ACTIVATED_SUCCESSFULLY = {ACTIVATED_SUCCESSFULLY}")
 
     # Cargar configuraciones (después de la lógica de licencia/trial y antes de usar IDIOMA)
     puerto, baudios = cargar_configuracion_serial() # Carga IDIOMA también
@@ -2025,11 +1827,19 @@ def main():
         input_width_config, input_elements_height_config
     )
     
-    button_config_width = ventana_config_width - 40
+    button_config_width = (ventana_config_width - 60) // 2 # Ancho para dos botones con espacio
     button_config_height = 40
+    y_botones_config = rect_ventana_config.bottom - button_config_height - 20
+    
+    rect_boton_test_config = pygame.Rect(
+        rect_ventana_config.left + 20,
+        y_botones_config,
+        button_config_width, button_config_height
+    )
+    
     rect_boton_guardar_config = pygame.Rect(
-        rect_ventana_config.centerx - button_config_width // 2,
-        rect_ventana_config.bottom - button_config_height - 20,
+        rect_boton_test_config.right + 20,
+        y_botones_config,
         button_config_width, button_config_height
     )
     
@@ -2085,6 +1895,11 @@ def main():
     MAX_LINEAS_CONSOLA = 100 # Número máximo de líneas a mantener en el buffer
     copy_success_message = None
     copy_message_timer = 0
+
+    # Variables para la ventana de Test de datos del puerto serie
+    mostrar_ventana_test_serial = False
+    datos_test_serial_buffer = []
+    MAX_LINEAS_TEST_SERIAL = 100
 
 
     # Variables para el cursor parpadeante
@@ -2150,28 +1965,8 @@ def main():
                             serial_port_available = False
                     time.sleep(1)
 
-                # Lógica de lectura del puerto serie
-                if serial_port_available and ser and ser.is_open:
-                    try:
-                        if ser.in_waiting > 0:
-                            line = ser.readline().decode('ascii', errors='replace').strip()
-                            if line.startswith('$GPGLL') or line.startswith('$GNGLL'): parse_gll(line)
-                            elif line.startswith('$GPGGA') or line.startswith('$GNGGA'): parse_gga(line)
-                            elif line.startswith('$GPRMC') or line.startswith('$GNRMC'): parse_rmc(line)
-                            elif line.startswith('$GPVTG') or line.startswith('$GNVTG'): parse_vtg(line)
-                            elif line.startswith('$GPHDT') or line.startswith('$GNHDT'): parse_hdt(line)
-                            elif line.startswith('$GPHDG') or line.startswith('$GNHDG'): parse_hdg(line)
-                            elif line.startswith('$PFEC,GPatt'): parse_pfec_gpatt(line)
-                            elif line.startswith('$GPZDA') or line.startswith('$GNZDA'): parse_gpzda(line)
-                    except serial.SerialException as se:
-                        print(f"SerialException durante lectura (oculto): {se}. Marcando puerto como desconectado.")
-                        if ser:
-                            ser.close()
-                        ser = None
-                        serial_port_available = False
-                        reset_ui_data()
-                    except Exception as e:
-                        pass
+                # Procesar datos del puerto serie
+                procesar_datos_serie()
                 
                 # Lógica de verificación de red
                 if not network_available:
@@ -2183,21 +1978,8 @@ def main():
                         network_check_thread.start()
                         last_network_check_time = now
 
-                # Lógica de envío de datos
-                if time.time() - ultima_vez_envio_datos >= INTERVALO_ENVIO_DATOS_S:
-                    if serial_port_available and not nmea_data_stale:
-                        estado_alarma_para_print = "SIN ALARMA"
-                        if alarma_roll_babor_activa: estado_alarma_para_print = "ALARMA BABOR"
-                        elif alarma_roll_estribor_activa: estado_alarma_para_print = "ALARMA ESTRIBOR"
-                        if alarma_pitch_sentado_activa: estado_alarma_para_print += " Y SENTADO" if "ALARMA" in estado_alarma_para_print else "ALARMA SENTADO"
-                        elif alarma_pitch_encabuzado_activa: estado_alarma_para_print += " Y ENCABUZADO" if "ALARMA" in estado_alarma_para_print else "ALARMA ENCABUZADO"
-                        
-                        print("--- Background processing ---")
-                        print(f"Valores: P:{ts_pitch_float}, R:{ts_roll_float}, Lat:{ts_lat_decimal}, Lon:{ts_lon_decimal}, Spd:{ts_speed_float}, Hdg:{ts_heading_float}, Alt:{ts_altitude_float}, Alarma: {estado_alarma_para_print}")
-                        guardar_csv()
-                        if SERVICIO_DATOS_ACTUAL == "thingspeak" and network_available:
-                            enviar_thingspeak()
-                    ultima_vez_envio_datos = time.time()
+                # Lógica de envío y guardado de datos
+                enviar_y_guardar_datos_periodicamente()
                 
                 pygame.time.delay(100)
             continue
@@ -2214,16 +1996,8 @@ def main():
         opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_idioma"])
         opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_servicio_datos"])
         
-        if PROGRAM_MODE != "LICENSED":
-            opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_activar"])
-            
         opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_acerca"])
         
-        if simulador_activado:
-            opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_simulador_on"])
-        else:
-            opciones_menu_barra.append(TEXTOS[IDIOMA]["menu_simulador_off"])
-            
         # Manejo del parpadeo del cursor
         current_time_millis = pygame.time.get_ticks()
         if current_time_millis - cursor_blink_timer > CURSOR_BLINK_INTERVAL:
@@ -2274,32 +2048,8 @@ def main():
                                     mostrar_ventana_password_servicio = True
                                     input_password_str = ""; intento_password_fallido = False; input_servicio_activo = None
                                 
-                                elif opcion_clicada_texto == TEXTOS[IDIOMA]["menu_activar"]:
-                                    # Esta opción solo está en opciones_menu_barra si PROGRAM_MODE != "LICENSED"
-                                    # así que no necesitamos un check explícito de PROGRAM_MODE aquí, aunque no hace daño.
-                                    if PROGRAM_MODE == "LICENSED": # Doble check, por si acaso la lógica de lista falla
-                                         print("INFO: El producto ya está activado (clic en menú).")
-                                    else:
-                                        print(f"INFO: Accediendo a activación desde menú. PROGRAM_MODE actual: {PROGRAM_MODE}")
-                                        temp_internal_id, temp_display_id = get_machine_specific_identifier()
-                                        activation_was_successful = run_activation_sequence(screen, temp_internal_id, temp_display_id)
-                                        
-                                        if activation_was_successful:
-                                            print("INFO: Activación exitosa desde el menú.")
-                                            # PROGRAM_MODE y ACTIVATED_SUCCESSFULLY se actualizan en run_activation_sequence
-                                        else:
-                                            print("INFO: Ventana de activación cerrada desde el menú sin activación exitosa.")
-                                            # El estado (GRACE_PERIOD o TRIAL_EXPIRED) no cambia.
-                                
                                 elif opcion_clicada_texto == TEXTOS[IDIOMA]["menu_acerca"]:
                                     mostrar_ventana_acerca_de = True
-                                elif opcion_clicada_texto in [TEXTOS[IDIOMA]["menu_simulador_on"], TEXTOS[IDIOMA]["menu_simulador_off"]]:
-                                    simulador_activado = not simulador_activado
-                                    if simulador_activado:
-                                        reset_simulation_state()
-                                    else:
-                                        reset_ui_data()
-                                        sim_initialized = False
                                 break
                     
                     # Manejo de clic en ventana de servicio de datos
@@ -2310,7 +2060,7 @@ def main():
                         elif globals().get('rect_radio_thingspeak') and globals().get('rect_radio_thingspeak').collidepoint(evento.pos):
                             SERVICIO_DATOS_ACTUAL = "thingspeak"
                         elif globals().get('rect_radio_google_cloud') and globals().get('rect_radio_google_cloud').collidepoint(evento.pos):
-                            SERVICIO_DATOS_ACTUAL = "google_cloud"
+                            SERVICIO_DATOS_ACTUAL = "azure_sql"
                         elif globals().get('rect_input_apikey_thingspeak') and globals().get('rect_input_apikey_thingspeak').collidepoint(evento.pos):
                             input_servicio_activo = "thingspeak"
                         elif globals().get('rect_input_apikey_google_cloud') and globals().get('rect_input_apikey_google_cloud').collidepoint(evento.pos):
@@ -2442,6 +2192,11 @@ def main():
                             puerto_dropdown_activo = False; globals()['puerto_dropdown_activo'] = False
                             baudios_dropdown_activo = False; globals()['baudios_dropdown_activo'] = False
                         
+                        elif rect_boton_test_config.collidepoint(evento.pos):
+                            mostrar_ventana_config_serial = False # Ocultar ventana de config
+                            mostrar_ventana_test_serial = True
+                            datos_test_serial_buffer.clear() # Limpiar buffer al abrir
+
                         elif rect_boton_guardar_config.collidepoint(evento.pos):
                             nuevos_baudios = lista_baudios_seleccionables[input_baudios_idx]
                             guardado_exitoso = guardar_configuracion_serial(input_puerto_str, nuevos_baudios)
@@ -2470,10 +2225,7 @@ def main():
                     
                     # Manejo de clic en ventana de alarma
                     elif mostrar_ventana_alarma:
-                        # Asegurarse que los rects de botones/inputs de alarma están definidos si la ventana es visible
-                        # (Se definen más adelante en la sección de dibujado, idealmente deberían definirse antes del bucle de eventos si se usan aquí)
-                        # Por ahora, asumimos que si la ventana es visible, estos rects existen.
-                        # Para robustez, añadir chequeos de if rect_boton_salir_alarma: etc.
+                      
                         if 'rect_boton_salir_alarma' in locals() and rect_boton_salir_alarma.collidepoint(evento.pos):
                             mostrar_ventana_alarma = False
                             input_alarma_activo = None
@@ -2509,7 +2261,12 @@ def main():
                     elif mostrar_ventana_acerca_de:
                         if 'rect_boton_cerrar_acerca_de' in locals() and rect_boton_cerrar_acerca_de.collidepoint(evento.pos):
                             mostrar_ventana_acerca_de = False
-            
+                    
+                    elif mostrar_ventana_test_serial:
+                        if 'rect_boton_cerrar_test_serial' in globals() and rect_boton_cerrar_test_serial.collidepoint(evento.pos):
+                            mostrar_ventana_test_serial = False
+                            mostrar_ventana_config_serial = True # Volver a abrir la config
+
             # Manejo de entrada de teclado
             if evento.type == pygame.KEYDOWN:
                 if mostrar_ventana_config_serial:
@@ -2597,7 +2354,11 @@ def main():
                 elif mostrar_ventana_consola_datos: # Si la consola está visible
                     if evento.key == pygame.K_ESCAPE:
                         mostrar_ventana_consola_datos = False
-        
+                elif mostrar_ventana_test_serial:
+                    if evento.key == pygame.K_ESCAPE:
+                        mostrar_ventana_test_serial = False
+                        mostrar_ventana_config_serial = True # Volver a abrir la config
+
         # Reconexión automática si el puerto no está disponible
         # Asegurarse que la ventana de consola no bloquee la reconexión si está abierta
         condiciones_para_no_reconectar = (
@@ -2633,44 +2394,9 @@ def main():
                     serial_port_available = False
             time.sleep(1) # Pequeña pausa para no sobrecargar la CPU en el bucle de reconexión
         
-        # Lectura de datos del puerto serial o del simulador
-        if simulador_activado:
-            generar_datos_simulados(dt)
-        elif serial_port_available and ser and ser.is_open:
-            try:
-                if ser.in_waiting > 0:
-                    line = ser.readline().decode('ascii', errors='replace').strip()
-                    if line.startswith('$GPGLL') or line.startswith('$GNGLL'):
-                        parse_gll(line) # Assuming you have or will create this function
-                        pass # Placeholder if parse_gll is not defined
-                    elif line.startswith('$GPGGA') or line.startswith('$GNGGA'):
-                        parse_gga(line)
-                    elif line.startswith('$GPRMC') or line.startswith('$GNRMC'):
-                        parse_rmc(line)
-                    elif line.startswith('$GPVTG') or line.startswith('$GNVTG'):
-                        parse_vtg(line)
-                    elif line.startswith('$GPHDT') or line.startswith('$GNHDT'):
-                        parse_hdt(line)
-                    elif line.startswith('$GPHDG') or line.startswith('$GNHDG'):
-                        parse_hdg(line)
-                    elif line.startswith('$PFEC,GPatt'):
-                        parse_pfec_gpatt(line)
-                    elif line.startswith('$GPZDA') or line.startswith('$GNZDA'):
-                        parse_gpzda(line)
-            except serial.SerialException as se:
-                print(f"SerialException durante lectura: {se}. Marcando puerto como desconectado.")
-                if ser:
-                    ser.close()
-                ser = None
-                serial_port_available = False
-                ultimo_intento_reconeccion_tiempo = pygame.time.get_ticks() # Para intentar reconectar pronto
-                reset_ui_data() # Limpiar datos en pantalla
-                nmea_data_stale = True 
-            except Exception as e: # Otros errores de lectura/decode
-                # print(f"Error general durante lectura/procesamiento NMEA: {e}")
-                pass # Continuar, puede ser un error puntual de datos
-        
-        # Envío periódico de datos a ThingSpeak y CSV y chequeo de red
+        # Procesar datos del puerto serie
+        procesar_datos_serie()
+        # Envío periódico de datos y chequeo de red
         if not network_available:
             now = time.time()
             if now - last_network_check_time > 60: # Chequear cada 60 segundos
@@ -2680,57 +2406,7 @@ def main():
                 network_check_thread.start()
                 last_network_check_time = now
         
-        if serial_port_available and not nmea_data_stale:
-            if time.time() - ultima_vez_envio_datos >= INTERVALO_ENVIO_DATOS_S:
-                estado_alarma_para_print = "SIN ALARMA"
-                if alarma_roll_babor_activa:
-                    estado_alarma_para_print = "ALARMA BABOR"
-                elif alarma_roll_estribor_activa:
-                    estado_alarma_para_print = "ALARMA ESTRIBOR"
-                
-                if alarma_pitch_sentado_activa:
-                    estado_alarma_para_print += " Y SENTADO" if "ALARMA" in estado_alarma_para_print else "ALARMA SENTADO"
-                elif alarma_pitch_encabuzado_activa:
-                    estado_alarma_para_print += " Y ENCABUZADO" if "ALARMA" in estado_alarma_para_print else "ALARMA ENCABUZADO"
-                
-                print(f"--- Guardando y Enviando Datos ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---")
-                print(f"Valores: P:{ts_pitch_float}, R:{ts_roll_float}, Lat:{ts_lat_decimal}, Lon:{ts_lon_decimal}, Spd:{ts_speed_float}, Hdg:{ts_heading_float}, Alt:{ts_altitude_float}, Alarma: {estado_alarma_para_print}")
-                agregar_a_consola(f"Datos: P:{ts_pitch_float:.1f}, R:{ts_roll_float:.1f}, Lat:{ts_lat_decimal:.4f}, Lon:{ts_lon_decimal:.4f}, Spd:{ts_speed_float:.1f}, Hdg:{ts_heading_float:.0f}, Alarma: {estado_alarma_para_print}")
-                
-                guardar_csv()
-                agregar_a_consola(f"Guardado en CSV: {CSV_FILENAME}")
-
-                if SERVICIO_DATOS_ACTUAL == "thingspeak" and network_available:
-                    enviar_thingspeak()
-                elif SERVICIO_DATOS_ACTUAL == "sql_server":
-                    partes_alarma = []
-                    if alarma_roll_babor_activa: partes_alarma.append("B")
-                    if alarma_roll_estribor_activa: partes_alarma.append("E")
-                    if alarma_pitch_sentado_activa: partes_alarma.append("S")
-                    if alarma_pitch_encabuzado_activa: partes_alarma.append("EN")
-                    estado_alarma_sql_corto = "+".join(partes_alarma) if partes_alarma else "OK"
-                    
-                    timestamp_final = ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-
-                    payload_sql = {
-                        'ship_id': ship_id_final,
-                        'timestamp': timestamp_final,
-                        'pitch': ts_pitch_float,
-                        'roll': ts_roll_float,
-                        'latitude': ts_lat_decimal,
-                        'longitude': ts_lon_decimal,
-                        'speed': ts_speed_float,
-                        'heading': ts_heading_float,
-                        'altitude': ts_altitude_float,
-                        'alarm_status': estado_alarma_sql_corto
-                    }
-                    sql_thread = threading.Thread(target=worker_enviar_sql, args=(payload_sql,))
-                    sql_thread.daemon = True
-                    sql_thread.start()
-                
-                print("---------------------------------------------------\n")
-                
-                ultima_vez_envio_datos = time.time()
+        enviar_y_guardar_datos_periodicamente()
         
         # Detección de condiciones de alarma
         # Usar los valores de ts_pitch_float y ts_roll_float que ya son floats
@@ -2892,26 +2568,25 @@ def main():
         pygame.draw.circle(screen, BLANCO, (centro_x_circulo2, centro_y_circulos), radio_circulo_img, 2) # Círculo Roll
         
         # Dibujar indicador de pitch
-        if PROGRAM_MODE != "TRIAL_EXPIRED":
-            if pitch_image_base_grande and att_pitch_str != "N/A":
-                try:
-                    valor_pitch_float = float(att_pitch_str)
-                    angulo_rotacion_pygame = -valor_pitch_float
-                    imagen_pitch_rotada_grande = pygame.transform.rotate(pitch_image_base_grande, angulo_rotacion_pygame)
-                    diametro_claraboya = 2 * radio_circulo_img
-                    claraboya_surface = pygame.Surface((diametro_claraboya, diametro_claraboya), pygame.SRCALPHA)
-                    claraboya_surface.fill((0,0,0,0))
-                    offset_x = (diametro_claraboya - imagen_pitch_rotada_grande.get_width()) // 2
-                    offset_y = (diametro_claraboya - imagen_pitch_rotada_grande.get_height()) // 2
-                    claraboya_surface.blit(imagen_pitch_rotada_grande, (offset_x, offset_y))
-                    mask_pygame = pygame.Surface((diametro_claraboya, diametro_claraboya), pygame.SRCALPHA) # Renombrado mask a mask_pygame para evitar conflicto con módulo mask
-                    mask_pygame.fill((0,0,0,0))
-                    pygame.draw.circle(mask_pygame, (255,255,255,255), (radio_circulo_img, radio_circulo_img), radio_circulo_img)
-                    claraboya_surface.blit(mask_pygame, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
-                    rect_claraboya_final = claraboya_surface.get_rect(center=(centro_x_circulo1, centro_y_circulos))
-                    screen.blit(claraboya_surface, rect_claraboya_final)
-                except ValueError:
-                    pass 
+        if pitch_image_base_grande and att_pitch_str != "N/A":
+            try:
+                valor_pitch_float = float(att_pitch_str)
+                angulo_rotacion_pygame = -valor_pitch_float
+                imagen_pitch_rotada_grande = pygame.transform.rotate(pitch_image_base_grande, angulo_rotacion_pygame)
+                diametro_claraboya = 2 * radio_circulo_img
+                claraboya_surface = pygame.Surface((diametro_claraboya, diametro_claraboya), pygame.SRCALPHA)
+                claraboya_surface.fill((0,0,0,0))
+                offset_x = (diametro_claraboya - imagen_pitch_rotada_grande.get_width()) // 2
+                offset_y = (diametro_claraboya - imagen_pitch_rotada_grande.get_height()) // 2
+                claraboya_surface.blit(imagen_pitch_rotada_grande, (offset_x, offset_y))
+                mask_pygame = pygame.Surface((diametro_claraboya, diametro_claraboya), pygame.SRCALPHA) # Renombrado mask a mask_pygame para evitar conflicto con módulo mask
+                mask_pygame.fill((0,0,0,0))
+                pygame.draw.circle(mask_pygame, (255,255,255,255), (radio_circulo_img, radio_circulo_img), radio_circulo_img)
+                claraboya_surface.blit(mask_pygame, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
+                rect_claraboya_final = claraboya_surface.get_rect(center=(centro_x_circulo1, centro_y_circulos))
+                screen.blit(claraboya_surface, rect_claraboya_final)
+            except ValueError:
+                pass
             
             pygame.draw.circle(screen, BLANCO, (centro_x_circulo1, centro_y_circulos), radio_circulo_img, 2)
             
@@ -2948,45 +2623,27 @@ def main():
                         pygame.draw.line(screen, BLANCO, (pos_flecha_pitch_x + ANCHO_FLECHA_DIR // 2, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2), (pos_flecha_pitch_x, pos_flecha_pitch_y_centro + LONGITUD_FLECHA_DIR // 2), 2)
                 except ValueError:
                     pass
-        else: # PROGRAM_MODE == "TRIAL_EXPIRED"
-            disabled_text_surf = font.render(TEXTOS[IDIOMA]["data_disabled_trial"], True, ROJO)
-            disabled_text_rect = disabled_text_surf.get_rect(center=(centro_x_circulo1, centro_y_circulos))
-            screen.blit(disabled_text_surf, disabled_text_rect)
-            pygame.draw.circle(screen, BLANCO, (centro_x_circulo1, centro_y_circulos), radio_circulo_img, 2) # Dibujar borde del círculo
-            for key, (angle_deg, etiqueta_str) in ANGULOS_MARCAS_ETIQUETAS_DEF.items():
-                angle_rad = math.radians(angle_deg)
-                x_inicio_marca = centro_x_circulo1 + RADIO_INICIO_MARCAS * math.cos(angle_rad)
-                y_inicio_marca = centro_y_circulos + RADIO_INICIO_MARCAS * math.sin(angle_rad)
-                x_fin_marca = centro_x_circulo1 + RADIO_FIN_MARCAS * math.cos(angle_rad)
-                y_fin_marca = centro_y_circulos + RADIO_FIN_MARCAS * math.sin(angle_rad)
-                pygame.draw.line(screen, COLOR_MARCA_GRADO, (x_inicio_marca, y_inicio_marca), (x_fin_marca, y_fin_marca), GROSOR_MARCA_GRADO)
-                etiqueta_surf = font.render(etiqueta_str, True, COLOR_ETIQUETA_GRADO)
-                x_texto_etiqueta = centro_x_circulo1 + RADIO_POSICION_TEXTO_ETIQUETA * math.cos(angle_rad)
-                y_texto_etiqueta = centro_y_circulos + RADIO_POSICION_TEXTO_ETIQUETA * math.sin(angle_rad)
-                etiqueta_rect = etiqueta_surf.get_rect(center=(int(x_texto_etiqueta), int(y_texto_etiqueta)))
-                screen.blit(etiqueta_surf, etiqueta_rect)
 
         # Dibujar indicador de roll
-        if PROGRAM_MODE != "TRIAL_EXPIRED":
-            if roll_image_base_grande and att_roll_str != "N/A":
-                try:
-                    valor_roll_float = float(att_roll_str)
-                    angulo_rotacion_pygame_roll = -valor_roll_float
-                    imagen_roll_rotada_grande = pygame.transform.rotate(roll_image_base_grande, angulo_rotacion_pygame_roll)
-                    diametro_claraboya_roll = 2 * radio_circulo_img
-                    claraboya_surface_roll = pygame.Surface((diametro_claraboya_roll, diametro_claraboya_roll), pygame.SRCALPHA)
-                    claraboya_surface_roll.fill((0,0,0,0))
-                    offset_x_roll = (diametro_claraboya_roll - imagen_roll_rotada_grande.get_width()) // 2
-                    offset_y_roll = (diametro_claraboya_roll - imagen_roll_rotada_grande.get_height()) // 2
-                    claraboya_surface_roll.blit(imagen_roll_rotada_grande, (offset_x_roll, offset_y_roll))
-                    mask_roll_pygame = pygame.Surface((diametro_claraboya_roll, diametro_claraboya_roll), pygame.SRCALPHA) # Renombrado mask_roll a mask_roll_pygame
-                    mask_roll_pygame.fill((0,0,0,0))
-                    pygame.draw.circle(mask_roll_pygame, (255,255,255,255), (radio_circulo_img, radio_circulo_img), radio_circulo_img)
-                    claraboya_surface_roll.blit(mask_roll_pygame, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
-                    rect_claraboya_final_roll = claraboya_surface_roll.get_rect(center=(centro_x_circulo2, centro_y_circulos))
-                    screen.blit(claraboya_surface_roll, rect_claraboya_final_roll)
-                except ValueError:
-                    pass
+        if roll_image_base_grande and att_roll_str != "N/A":
+            try:
+                valor_roll_float = float(att_roll_str)
+                angulo_rotacion_pygame_roll = -valor_roll_float
+                imagen_roll_rotada_grande = pygame.transform.rotate(roll_image_base_grande, angulo_rotacion_pygame_roll)
+                diametro_claraboya_roll = 2 * radio_circulo_img
+                claraboya_surface_roll = pygame.Surface((diametro_claraboya_roll, diametro_claraboya_roll), pygame.SRCALPHA)
+                claraboya_surface_roll.fill((0,0,0,0))
+                offset_x_roll = (diametro_claraboya_roll - imagen_roll_rotada_grande.get_width()) // 2
+                offset_y_roll = (diametro_claraboya_roll - imagen_roll_rotada_grande.get_height()) // 2
+                claraboya_surface_roll.blit(imagen_roll_rotada_grande, (offset_x_roll, offset_y_roll))
+                mask_roll_pygame = pygame.Surface((diametro_claraboya_roll, diametro_claraboya_roll), pygame.SRCALPHA) # Renombrado mask_roll a mask_roll_pygame
+                mask_roll_pygame.fill((0,0,0,0))
+                pygame.draw.circle(mask_roll_pygame, (255,255,255,255), (radio_circulo_img, radio_circulo_img), radio_circulo_img)
+                claraboya_surface_roll.blit(mask_roll_pygame, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
+                rect_claraboya_final_roll = claraboya_surface_roll.get_rect(center=(centro_x_circulo2, centro_y_circulos))
+                screen.blit(claraboya_surface_roll, rect_claraboya_final_roll)
+            except ValueError:
+                pass
             
             pygame.draw.circle(screen, BLANCO, (centro_x_circulo2, centro_y_circulos), radio_circulo_img, 2)
             
@@ -3032,23 +2689,6 @@ def main():
                         pygame.draw.line(screen, ROJO, (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro + ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
                 except ValueError:
                     pass
-        else: # PROGRAM_MODE == "TRIAL_EXPIRED"
-            disabled_text_surf = font.render(TEXTOS[IDIOMA]["data_disabled_trial"], True, ROJO)
-            disabled_text_rect = disabled_text_surf.get_rect(center=(centro_x_circulo2, centro_y_circulos))
-            screen.blit(disabled_text_surf, disabled_text_rect)
-            pygame.draw.circle(screen, BLANCO, (centro_x_circulo2, centro_y_circulos), radio_circulo_img, 2) # Dibujar borde del círculo
-            for key, (angle_deg, etiqueta_str) in ANGULOS_MARCAS_ETIQUETAS_DEF.items():
-                angle_rad = math.radians(angle_deg)
-                x_inicio_marca_roll = centro_x_circulo2 + RADIO_INICIO_MARCAS * math.cos(angle_rad)
-                y_inicio_marca_roll = centro_y_circulos + RADIO_INICIO_MARCAS * math.sin(angle_rad)
-                x_fin_marca_roll = centro_x_circulo2 + RADIO_FIN_MARCAS * math.cos(angle_rad)
-                y_fin_marca_roll = centro_y_circulos + RADIO_FIN_MARCAS * math.sin(angle_rad)
-                pygame.draw.line(screen, COLOR_MARCA_GRADO, (x_inicio_marca_roll, y_inicio_marca_roll), (x_fin_marca_roll, y_fin_marca_roll), GROSOR_MARCA_GRADO)
-                etiqueta_surf_roll = font.render(etiqueta_str, True, COLOR_ETIQUETA_GRADO)
-                x_texto_etiqueta_roll = centro_x_circulo2 + RADIO_POSICION_TEXTO_ETIQUETA * math.cos(angle_rad)
-                y_texto_etiqueta_roll = centro_y_circulos + RADIO_POSICION_TEXTO_ETIQUETA * math.sin(angle_rad)
-                etiqueta_rect_roll = etiqueta_surf_roll.get_rect(center=(int(x_texto_etiqueta_roll), int(y_texto_etiqueta_roll)))
-                screen.blit(etiqueta_surf_roll, etiqueta_rect_roll)
 
         # Dibujar cajas de datos
         espacio_entre_cajas_vertical = 10
@@ -3070,6 +2710,11 @@ def main():
         y_caja_cabeceo = y_caja_rumbo_vel + altura_caja_rumbo_vel + espacio_entre_cajas_vertical # Debajo de Rumbo/Vel
         dim_caja_att = [x_inicio_cajas_datos, y_caja_cabeceo, ancho_cajas_datos, altura_caja_cabeceo]
         
+        # Caja de ROT (nueva)
+        altura_caja_rot = 60 # Más pequeña
+        y_caja_rot = y_caja_cabeceo + altura_caja_cabeceo + espacio_entre_cajas_vertical
+        dim_caja_rot = [x_inicio_cajas_datos, y_caja_rot, ancho_cajas_datos, altura_caja_rot]
+
         # Dibujar las cajas (fondo y borde)
         pygame.draw.rect(screen, COLOR_CAJA_DATOS_FONDO, dim_caja_gll)
         pygame.draw.rect(screen, COLOR_CAJA_DATOS_BORDE, dim_caja_gll, 1)
@@ -3080,6 +2725,9 @@ def main():
         pygame.draw.rect(screen, COLOR_CAJA_DATOS_FONDO, dim_caja_att)
         pygame.draw.rect(screen, COLOR_CAJA_DATOS_BORDE, dim_caja_att, 1)
         
+        pygame.draw.rect(screen, COLOR_CAJA_DATOS_FONDO, dim_caja_rot)
+        pygame.draw.rect(screen, COLOR_CAJA_DATOS_BORDE, dim_caja_rot, 1)
+
         # Mostrar datos en las cajas (usando TEXTOS[IDIOMA])
         
         # Caja Lat/Lon
@@ -3193,15 +2841,27 @@ def main():
             )
             screen.blit(roll_direccion_surf, roll_direccion_rect)
         
+        # Caja ROT
+        rot_etiqueta_surf = font.render(TEXTOS[IDIOMA]["rot"] + " :", True, COLOR_CAJA_DATOS_TEXTO)
+        rot_valor_str = f"{rot_float:+.1f}°/min"
+        rot_valor_surf = font_datos_grandes.render(rot_valor_str, True, COLOR_CAJA_DATOS_TEXTO)
+        
+        rot_etiqueta_rect = rot_etiqueta_surf.get_rect(
+            left=dim_caja_rot[0] + padding_horizontal_caja,
+            centery=dim_caja_rot[1] + dim_caja_rot[3] // 2
+        )
+        rot_valor_rect = rot_valor_surf.get_rect(
+            left=rot_etiqueta_rect.right + 10,
+            centery=rot_etiqueta_rect.centery
+        )
+        screen.blit(rot_etiqueta_surf, rot_etiqueta_rect)
+        screen.blit(rot_valor_surf, rot_valor_rect)
+
         # Dibujar la nueva caja de Altitud debajo de los círculos
         # (Asegurarse de que se dibuje antes de los mensajes de estado para que no los tape)
         altura_caja_altitud = 60 # Altura para la caja de altitud
         ancho_caja_altitud = (radio_circulo_img * 2) * 2 + 50 # Ancho similar a los dos círculos juntos
         
-        # Calcular X para centrar la caja en el area_izquierda_rect
-        # area_izquierda_rect.width es nuevo_ancho_area_izquierda = 750
-        # centro_x_circulo1 y centro_x_circulo2 definen la extensión de los círculos
-        # Podríamos centrarla entre centro_x_circulo1 - radio_circulo_img y centro_x_circulo2 + radio_circulo_img
         ancho_original_caja_altitud = (centro_x_circulo2 + radio_circulo_img) - (centro_x_circulo1 - radio_circulo_img)
         ancho_caja_altitud = ancho_original_caja_altitud / 2
 
@@ -3213,7 +2873,7 @@ def main():
 
         y_caja_altitud = centro_y_circulos + radio_circulo_img + 20 # 20px de margen debajo de los círculos
         
-        dim_caja_altitud = [x_inicio_caja_altitud, y_caja_altitud, ancho_caja_altitud, altura_caja_altitud]
+        dim_caja_altitud = pygame.Rect(x_inicio_caja_altitud, y_caja_altitud, ancho_caja_altitud, altura_caja_altitud)
 
         pygame.draw.rect(screen, COLOR_CAJA_DATOS_FONDO, dim_caja_altitud)
         pygame.draw.rect(screen, COLOR_CAJA_DATOS_BORDE, dim_caja_altitud, 1)
@@ -3234,6 +2894,37 @@ def main():
             top=text_rect_titulo_altitud.bottom + 2 # Debajo del título
         )
         screen.blit(text_surface_altitud_data, text_rect_altitud_data)
+
+        # Dibujar LEDs de sentinas
+        radio_led = 15
+        y_leds = dim_caja_altitud.centery
+        x_led1 = dim_caja_altitud.right + 40
+        x_led2 = x_led1 + radio_led * 2 + 80
+
+        # LED 1
+        if switch1_status == "ON":
+            color_led1 = ROJO
+        elif switch1_status == "OFF":
+            color_led1 = VERDE
+        else: # N/A o cualquier otro estado
+            color_led1 = AZUL
+        pygame.draw.circle(screen, color_led1, (x_led1, y_leds), radio_led)
+        label_sentina1_surf = font.render(TEXTOS[IDIOMA]["sentina1"], True, BLANCO)
+        label_sentina1_rect = label_sentina1_surf.get_rect(center=(x_led1, y_leds + radio_led + 15))
+        screen.blit(label_sentina1_surf, label_sentina1_rect)
+
+        # LED 2
+        if switch2_status == "ON":
+            color_led2 = ROJO
+        elif switch2_status == "OFF":
+            color_led2 = VERDE
+        else: # N/A o cualquier otro estado
+            color_led2 = AZUL
+        pygame.draw.circle(screen, color_led2, (x_led2, y_leds), radio_led)
+        label_sentina2_surf = font.render(TEXTOS[IDIOMA]["sentina2"], True, BLANCO)
+        label_sentina2_rect = label_sentina2_surf.get_rect(center=(x_led2, y_leds + radio_led + 15))
+        screen.blit(label_sentina2_surf, label_sentina2_rect)
+
 
         # Mostrar mensajes de estado (NO HAY DATOS / DESCONECTADO)
         # Estos mensajes deben aparecer encima de los círculos si están activos
@@ -3329,6 +3020,12 @@ def main():
                 (rect_input_baudios_display_config.right - 10, rect_input_baudios_display_config.centery + 3)
             ])
             
+            # Botón Test
+            pygame.draw.rect(screen, COLOR_BOTON_FONDO_3D, rect_boton_test_config)
+            # (bordes 3D para el botón test)
+            test_surf = font.render(TEXTOS[IDIOMA]["boton_test"], True, COLOR_TEXTO_NORMAL)
+            screen.blit(test_surf, test_surf.get_rect(center=rect_boton_test_config.center))
+
             # Botón guardar
             pygame.draw.rect(screen, COLOR_BOTON_FONDO_3D, rect_boton_guardar_config) # Fondo
             # Borde 3D
@@ -3337,7 +3034,7 @@ def main():
             pygame.draw.line(screen, COLOR_BOTON_BORDE_OSCURO_3D, pygame.math.Vector2(rect_boton_guardar_config.left, rect_boton_guardar_config.bottom -1), rect_boton_guardar_config.bottomright, 1)
             pygame.draw.line(screen, COLOR_BOTON_BORDE_OSCURO_3D, pygame.math.Vector2(rect_boton_guardar_config.right -1, rect_boton_guardar_config.top), rect_boton_guardar_config.bottomright, 1)
             
-            guardar_surf = font.render(TEXTOS[IDIOMA]["boton_guardar"] + " & Aplicar", True, COLOR_TEXTO_NORMAL) # Texto del botón
+            guardar_surf = font.render(TEXTOS[IDIOMA]["boton_guardar"], True, COLOR_TEXTO_NORMAL)
             screen.blit(guardar_surf, guardar_surf.get_rect(center=rect_boton_guardar_config.center))
             
             # Dibujar desplegables si están activos (deben dibujarse encima de otros elementos)
@@ -3377,10 +3074,7 @@ def main():
                         item_height
                     )
                     lista_rects_items_puerto.append(item_rect) # Guardar rect para detección de clic
-                    
-                    # Resaltar item si el mouse está encima (opcional, no implementado aquí)
-                    # if item_rect.collidepoint(mouse_pos):
-                    #    pygame.draw.rect(screen, COLOR_SELECCION_DROPDOWN, item_rect)
+                
                     
                     item_surf = font.render(port_name, True, COLOR_TEXTO_NORMAL)
                     screen.blit(item_surf, (item_rect.left + 5, item_rect.centery - item_surf.get_height() // 2))
@@ -3714,7 +3408,7 @@ def main():
             globals()['rect_radio_google_cloud'] = pygame.Rect(rect_ventana_servicio_datos.left + padding_x_servicio, current_y_servicio, ventana_servicio_width - 2*padding_x_servicio, RADIO_BUTTON_SIZE*2 + 4)
 
             pygame.draw.circle(screen, COLOR_TEXTO_NORMAL, (radio_x + RADIO_BUTTON_SIZE, current_y_servicio + RADIO_BUTTON_SIZE), RADIO_BUTTON_SIZE, 1)
-            if SERVICIO_DATOS_ACTUAL == "google_cloud":
+            if SERVICIO_DATOS_ACTUAL == "azure_sql":
                 pygame.draw.circle(screen, COLOR_TEXTO_NORMAL, (radio_x + RADIO_BUTTON_SIZE, current_y_servicio + RADIO_BUTTON_SIZE), RADIO_BUTTON_SIZE - 4)
 
             label_gc_surf = font.render(TEXTOS[IDIOMA]["opcion_google_cloud"], True, COLOR_TEXTO_NORMAL)
@@ -3772,68 +3466,15 @@ def main():
             mostrar_consola_servicio_surf = font.render(TEXTOS[IDIOMA]["boton_mostrar_consola"], True, COLOR_TEXTO_NORMAL)
             screen.blit(mostrar_consola_servicio_surf, mostrar_consola_servicio_surf.get_rect(center=rect_boton_mostrar_consola_servicio.center))
 
-        # Ventana de Consola de Datos (dibujar si está visible)
-        # Debe dibujarse después de otras ventanas modales si se quiere que esté por encima,
-        # o antes si se quiere que pueda ser tapada. Por ahora, después de las de config.
+       
         elif mostrar_ventana_consola_datos:
             # Usar una fuente estándar para la consola, o definir una específica
             font_para_consola = pygame.font.Font(None, 22) # Puede ser la misma que font_bar_herramientas
             draw_console_window(screen, font_para_consola, datos_consola_buffer, copy_success_message)
-
-
-        # Mostrar tiempo restante del periodo de gracia
-        if PROGRAM_MODE == "GRACE_PERIOD" and grace_period_start_time_obj is not None:
-            remaining_time_str = format_remaining_grace_time(grace_period_start_time_obj)
-            if remaining_time_str:
-                # Usar una fuente un poco más pequeña para este mensaje
-                font_trial_info = pygame.font.Font(None, 20) # Misma que font_bar_herramientas o similar
-                trial_text_color = (255, 223, 0) # Un color dorado/amarillo
-                
-                if IDIOMA == "es":
-                    grace_message = f"periodo de prueba restante: {remaining_time_str}"
-                else: # IDIOMA == "en"
-                    grace_message = f"remaining trial period: {remaining_time_str}"
-
-                tiempo_surf = font_trial_info.render(grace_message, True, trial_text_color)
-                tiempo_rect = tiempo_surf.get_rect(centerx=screen.get_width() // 2, bottom=screen.get_height() - 5) # 5px padding desde abajo
-                
-                # Pequeño fondo oscuro semi-transparente para legibilidad
-                fondo_rect = tiempo_rect.inflate(10, 4) # Un poco más grande que el texto
-                fondo_surf = pygame.Surface(fondo_rect.size, pygame.SRCALPHA)
-                fondo_surf.fill((0, 0, 0, 120)) # Negro semi-transparente
-                screen.blit(fondo_surf, fondo_rect.topleft)
-                
-                screen.blit(tiempo_surf, tiempo_rect)
-
-        # Mostrar mensaje de TRIAL EXPIRADO
-        if PROGRAM_MODE == "TRIAL_EXPIRED":
-            font_trial_expired = pygame.font.Font(None, 74) # Fuente grande
-            expired_text_color = ROJO 
-            
-            expired_message = TEXTOS[IDIOMA]["trial_expired_message"]
-            expired_surf = font_trial_expired.render(expired_message, True, expired_text_color)
-            
-            # Crear una superficie para la marca de agua con transparencia alfa
-            # Esto permite que el texto sea semi-transparente si se desea,
-            # o simplemente para controlar su renderizado sobre otros elementos.
-            alpha_surface = pygame.Surface(expired_surf.get_size(), pygame.SRCALPHA)
-            alpha_surface.fill((0,0,0,0)) # Fondo transparente para la superficie del texto
-            
-            # Dibujar el texto en la superficie alfa con la opacidad deseada
-            # Para texto sólido pero que se dibuja encima:
-            # expired_surf.set_alpha(200) # Opcional: hacer el texto mismo semi-transparente
-            # alpha_surface.blit(expired_surf, (0,0))
-            # O dibujar directamente el texto sólido:
-            
-            expired_rect = expired_surf.get_rect(center=(screen.get_width() // 2, screen.get_height() // 2))
-            
-            # Opcional: Fondo semi-transparente para el texto para destacarlo
-            bg_rect = expired_rect.inflate(20, 10)
-            bg_surf = pygame.Surface(bg_rect.size, pygame.SRCALPHA)
-            bg_surf.fill((50, 50, 50, 180)) # Gris oscuro semi-transparente
-            screen.blit(bg_surf, bg_rect.topleft)
-            
-            screen.blit(expired_surf, expired_rect)
+        
+        elif mostrar_ventana_test_serial:
+            font_para_test = pygame.font.Font(None, 22)
+            draw_test_window(screen, font_para_test, datos_test_serial_buffer)
 
 
         pygame.display.flip()
@@ -3919,10 +3560,51 @@ def draw_console_window(screen, font_console, buffer_datos, copy_message=None):
         if current_y_text + line_height > area_texto_y + area_texto_height: # No dibujar fuera del área
             break
 # --- Fin de la nueva función ---
+def draw_test_window(screen, font_test, buffer_datos):
+    """Dibuja la ventana de visualización de datos de prueba del puerto serie."""
+    global rect_ventana_test_serial, rect_boton_cerrar_test_serial
+
+    ventana_test_width = 600
+    ventana_test_height = 400
+    ventana_test_x = (screen.get_width() - ventana_test_width) // 2
+    ventana_test_y = (screen.get_height() - ventana_test_height) // 2
+    rect_ventana_test_serial = pygame.Rect(ventana_test_x, ventana_test_y, ventana_test_width, ventana_test_height)
+
+    COLOR_FONDO_TEST = (30, 30, 30)
+    COLOR_BORDE_TEST = (80, 80, 80)
+    COLOR_TEXTO_TEST = (0, 255, 0) # Texto verde para look "terminal"
+
+    pygame.draw.rect(screen, COLOR_FONDO_TEST, rect_ventana_test_serial)
+    pygame.draw.rect(screen, COLOR_BORDE_TEST, rect_ventana_test_serial, 2)
+
+    titulo_test_surf = font_test.render("Datos del Puerto Serie (Test)", True, COLOR_TEXTO_TEST)
+    screen.blit(titulo_test_surf, (rect_ventana_test_serial.centerx - titulo_test_surf.get_width() // 2, rect_ventana_test_serial.top + 10))
+
+    rect_boton_cerrar_test_serial = pygame.Rect(rect_ventana_test_serial.right - 30, rect_ventana_test_serial.top + 5, 25, 25)
+    pygame.draw.rect(screen, (50, 50, 50), rect_boton_cerrar_test_serial)
+    cerrar_text_test = font_test.render("X", True, COLOR_TEXTO_TEST)
+    screen.blit(cerrar_text_test, cerrar_text_test.get_rect(center=rect_boton_cerrar_test_serial.center))
+
+    area_texto_y = rect_ventana_test_serial.top + titulo_test_surf.get_height() + 20
+    area_texto_height = rect_ventana_test_serial.height - (titulo_test_surf.get_height() + 30)
+    
+    line_height = font_test.get_linesize()
+    max_lines_display = area_texto_height // line_height
+    start_index = max(0, len(buffer_datos) - max_lines_display)
+
+    current_y_text = area_texto_y
+    for i in range(start_index, len(buffer_datos)):
+        linea_texto = buffer_datos[i]
+        texto_surf = font_test.render(linea_texto, True, COLOR_TEXTO_TEST)
+        screen.blit(texto_surf, (rect_ventana_test_serial.left + 10, current_y_text))
+        current_y_text += line_height
 
 # Punto de entrada del programa
 if __name__ == "__main__":
     main()
+
+
+
 
 
 
