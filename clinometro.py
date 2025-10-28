@@ -2696,7 +2696,7 @@ def main():
         if roll_image_base_grande and att_roll_str != "N/A":
             try:
                 valor_roll_float = float(att_roll_str)
-                angulo_rotacion_pygame_roll = -valor_roll_float
+                angulo_rotacion_pygame_roll = valor_roll_float
                 imagen_roll_rotada_grande = pygame.transform.rotate(roll_image_base_grande, angulo_rotacion_pygame_roll)
                 diametro_claraboya_roll = 2 * radio_circulo_img
                 claraboya_surface_roll = pygame.Surface((diametro_claraboya_roll, diametro_claraboya_roll), pygame.SRCALPHA)
@@ -3763,6 +3763,21 @@ def draw_test_window(screen, font_test, buffer_datos, copy_message=None):
 # Punto de entrada del programa
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
