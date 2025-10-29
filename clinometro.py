@@ -68,10 +68,17 @@ def on_exit(icon, item):
 
 def setup_tray_icon():
     """Configura y corre el ícono de la bandeja del sistema."""
-    image = Image.open(resource_path("barco.png"))
-    menu = (pystray.MenuItem('Abrir', on_open), pystray.MenuItem('Salir', on_exit))
-    icon = pystray.Icon("Lalito", image, "Lalito Clinometer", menu)
-    icon.run()
+    try:
+        image = Image.open(resource_path("barco.png"))
+        menu = (pystray.MenuItem('Abrir', on_open), pystray.MenuItem('Salir', on_exit))
+        icon = pystray.Icon("Lalito", image, "Lalito Clinometer", menu)
+        icon.run()
+    except FileNotFoundError:
+        print("ERROR CRÍTICO: No se encontró el archivo 'barco.png'. El ícono de la bandeja no se mostrará.")
+        # Opcional: Podrías intentar crear un ícono de reemplazo o simplemente no hacer nada.
+        # En este caso, el hilo simplemente terminará, pero el programa principal seguirá funcionando.
+    except Exception as e:
+        print(f"ERROR INESPERADO al configurar el ícono de la bandeja: {e}")
 
 # Definimos colores base
 NEGRO = (0, 0, 0)
@@ -3763,6 +3770,35 @@ def draw_test_window(screen, font_test, buffer_datos, copy_message=None):
 # Punto de entrada del programa
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
