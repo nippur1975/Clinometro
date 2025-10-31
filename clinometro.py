@@ -1258,429 +1258,6 @@ def procesar_datos_serie():
         pass
 
 def main():
-    """Dibuja la ventana de activación de licencia."""
-    font_titulo = pygame.font.Font(None, 36)
-    font_texto = pygame.font.Font(None, 28)
-    font_error = pygame.font.Font(None, 24)
-    font_boton_med = pygame.font.Font(None, 26) # Fuente para botones un poco más anchos
-    font_boton_pequeno = pygame.font.Font(None, 22) # Fuente para botones más pequeños si el texto es largo
-
-    ventana_width = 500
-    ventana_height = 450 # Aumentada para nueva disposición y mensaje de error
-    ventana_x = (screen.get_width() - ventana_width) // 2
-    ventana_y = (screen.get_height() - ventana_height) // 2
-    rect_ventana = pygame.Rect(ventana_x, ventana_y, ventana_width, ventana_height)
-
-    # Colores
-    color_fondo_ventana = (220, 220, 220)
-    color_borde_ventana = (100, 100, 100)
-    color_texto = (0, 0, 0)
-    color_input_fondo = (255, 255, 255)
-    color_input_borde = (50, 50, 50)
-    color_boton_fondo = (180, 180, 180)
-    color_boton_texto = (0, 0, 0)
-    color_error_texto = (200, 0, 0)
-
-    # Dibujar ventana
-    pygame.draw.rect(screen, color_fondo_ventana, rect_ventana)
-    pygame.draw.rect(screen, color_borde_ventana, rect_ventana, 2)
-
-    # Título
-    titulo_surf = font_titulo.render(TEXTOS[IDIOMA]["activation_required"], True, color_texto)
-    screen.blit(titulo_surf, (rect_ventana.centerx - titulo_surf.get_width() // 2, rect_ventana.top + 20))
-
-    # Mostrar ID de Máquina (Display ID)
-    id_label_surf = font_texto.render(TEXTOS[IDIOMA]["machine_id_label"], True, color_texto)
-    screen.blit(id_label_surf, (rect_ventana.left + 30, rect_ventana.top + 70))
-    id_value_surf = font_texto.render(display_id_str, True, color_texto)
-    screen.blit(id_value_surf, (rect_ventana.left + 30 + id_label_surf.get_width() + 10, rect_ventana.top + 70))
-
-    # Posición del ID de máquina (para referencia)
-    id_text_y_pos = rect_ventana.top + 70
-    id_value_rect = id_value_surf.get_rect(top=id_text_y_pos) # Solo para obtener altura y bottom
-
-    # Botón "Copiar ID" - Centrado debajo del ID de máquina
-    button_copiar_id_w = 120 # Ancho ajustado
-    button_copiar_id_h = 30
-    y_copiar_id = id_text_y_pos + id_value_rect.height + 10 # 10px debajo del texto del ID
-    rect_boton_copiar_id = pygame.Rect(0, 0, button_copiar_id_w, button_copiar_id_h)
-    rect_boton_copiar_id.centerx = rect_ventana.centerx
-    rect_boton_copiar_id.top = y_copiar_id
-    
-    pygame.draw.rect(screen, color_boton_fondo, rect_boton_copiar_id)
-    pygame.draw.rect(screen, color_input_borde, rect_boton_copiar_id, 1)
-    copiar_id_text_surf = font_boton_pequeno.render(TEXTOS[IDIOMA]["copy_id_button"], True, color_boton_texto)
-    screen.blit(copiar_id_text_surf, copiar_id_text_surf.get_rect(center=rect_boton_copiar_id.center))
-
-    # Etiqueta para Clave de Licencia (debajo de Copiar ID)
-    y_label_clave = rect_boton_copiar_id.bottom + 15
-    key_label_surf = font_texto.render(TEXTOS[IDIOMA]["license_key_label"], True, color_texto)
-    screen.blit(key_label_surf, (rect_ventana.left + 30, y_label_clave))
-
-    # Campo de entrada para Clave de Licencia
-    y_input_clave = y_label_clave + key_label_surf.get_height() + 5
-    rect_input_key = pygame.Rect(rect_ventana.left + 30, y_input_clave, ventana_width - 60, 35)
-    pygame.draw.rect(screen, color_input_fondo, rect_input_key)
-    pygame.draw.rect(screen, color_input_borde, rect_input_key, 1)
-    input_key_surf = font_texto.render(input_key_str, True, color_texto)
-    screen.blit(input_key_surf, (rect_input_key.left + 5, rect_input_key.centery - input_key_surf.get_height() // 2))
-
-    # Mensaje de error/feedback (debajo del input de clave)
-    y_despues_del_mensaje = rect_input_key.bottom + 8 # Posición Y base después del input key + padding para mensaje
-    if error_message:
-        error_surf = font_error.render(error_message, True, color_error_texto)
-        screen.blit(error_surf, (rect_ventana.centerx - error_surf.get_width() // 2, y_despues_del_mensaje))
-        y_inicio_area_botones = y_despues_del_mensaje + error_surf.get_height() + 15 # 15px padding después del mensaje
-    else:
-        y_inicio_area_botones = y_despues_del_mensaje + 15 # 15px padding incluso si no hay mensaje (o ajustar si se quiere más pegado)
-
-    # --- Nueva Disposición de Botones ---
-    button_height = 40
-    espacio_vertical_entre_filas = 15
-    espacio_entre_botones_horizontal = 20 # Espacio entre botones en la misma fila
-    
-    # Calcular la altura total del bloque de los 4 botones (2 filas)
-    altura_total_bloque_botones = (2 * button_height) + espacio_vertical_entre_filas
-
-    # Determinar el espacio vertical disponible para centrar los botones
-    padding_inferior_ventana = 20 # Espacio deseado en la parte inferior de la ventana
-    espacio_vertical_disponible_para_bloque = rect_ventana.bottom - y_inicio_area_botones - padding_inferior_ventana
-    
-    # Calcular la coordenada Y para la primera fila de botones para centrar el bloque
-    offset_y_bloque_botones = 0
-    if espacio_vertical_disponible_para_bloque > altura_total_bloque_botones:
-        offset_y_bloque_botones = (espacio_vertical_disponible_para_bloque - altura_total_bloque_botones) / 2
-    
-    y_botones_fila1 = y_inicio_area_botones + offset_y_bloque_botones
-    
-    w_usar_lic = 190 # "Usar Archivo Lic."
-    w_guardar_id = 160 # "Guardar ID"
-    
-    # Cálculo para centrar los dos botones con espacio entre ellos
-    ancho_total_fila1 = w_usar_lic + espacio_entre_botones_horizontal + w_guardar_id
-    x_inicio_fila1 = rect_ventana.left + (ventana_width - ancho_total_fila1) // 2 # Corregido: relativo a rect_ventana.left
-    
-    rect_boton_usar_archivo = pygame.Rect(x_inicio_fila1, y_botones_fila1, w_usar_lic, button_height)
-    rect_boton_guardar_id = pygame.Rect(x_inicio_fila1 + w_usar_lic + espacio_entre_botones_horizontal, y_botones_fila1, w_guardar_id, button_height)
-
-    # Fila 2: "Activar" y "Salir"
-    y_botones_fila2 = y_botones_fila1 + button_height + espacio_vertical_entre_filas 
-    w_activar = 120
-    w_salir = 120
-
-    ancho_total_fila2 = w_activar + espacio_entre_botones_horizontal + w_salir
-    x_inicio_fila2 = rect_ventana.left + (ventana_width - ancho_total_fila2) // 2 # Corregido: relativo a rect_ventana.left
-
-    rect_boton_activar = pygame.Rect(x_inicio_fila2, y_botones_fila2, w_activar, button_height)
-    rect_boton_salir_app = pygame.Rect(x_inicio_fila2 + w_activar + espacio_entre_botones_horizontal, y_botones_fila2, w_salir, button_height)
-
-    # Fila 3: "Obtener Licencia Online"
-    y_botones_fila3 = y_botones_fila2 + button_height + espacio_vertical_entre_filas
-    w_obtener_lic = 220
-    rect_boton_obtener_licencia = pygame.Rect(rect_ventana.centerx - w_obtener_lic // 2, y_botones_fila2 + 50, w_obtener_lic, button_height)
-
-
-    # Dibujar botones y sus textos
-    # "Usar Archivo Lic."
-    pygame.draw.rect(screen, color_boton_fondo, rect_boton_usar_archivo)
-    pygame.draw.rect(screen, color_input_borde, rect_boton_usar_archivo, 1)
-    usar_archivo_text_surf = font_boton_med.render(TEXTOS[IDIOMA]["use_license_file_button"], True, color_boton_texto)
-    screen.blit(usar_archivo_text_surf, usar_archivo_text_surf.get_rect(center=rect_boton_usar_archivo.center))
-
-    # "Guardar ID"
-    pygame.draw.rect(screen, color_boton_fondo, rect_boton_guardar_id)
-    pygame.draw.rect(screen, color_input_borde, rect_boton_guardar_id, 1)
-    guardar_id_text_surf = font_boton_med.render(TEXTOS[IDIOMA]["save_id_button"], True, color_boton_texto)
-    screen.blit(guardar_id_text_surf, guardar_id_text_surf.get_rect(center=rect_boton_guardar_id.center))
-
-    # "Activar"
-    pygame.draw.rect(screen, color_boton_fondo, rect_boton_activar)
-    pygame.draw.rect(screen, color_input_borde, rect_boton_activar, 1)
-    activar_text_surf = font_texto.render(TEXTOS[IDIOMA]["activate_button"], True, color_boton_texto)
-    screen.blit(activar_text_surf, activar_text_surf.get_rect(center=rect_boton_activar.center))
-
-    # "Salir"
-    pygame.draw.rect(screen, color_boton_fondo, rect_boton_salir_app)
-    pygame.draw.rect(screen, color_input_borde, rect_boton_salir_app, 1)
-    salir_text_surf = font_texto.render(TEXTOS[IDIOMA]["exit_button"], True, color_boton_texto)
-    screen.blit(salir_text_surf, salir_text_surf.get_rect(center=rect_boton_salir_app.center))
-
-    # "Obtener Licencia Online"
-    pygame.draw.rect(screen, color_boton_fondo, rect_boton_obtener_licencia)
-    pygame.draw.rect(screen, color_input_borde, rect_boton_obtener_licencia, 1)
-    obtener_lic_text_surf = font_boton_med.render(TEXTOS[IDIOMA]["get_license_online_button"], True, color_boton_texto)
-    screen.blit(obtener_lic_text_surf, obtener_lic_text_surf.get_rect(center=rect_boton_obtener_licencia.center))
-
-    # Dibujar cursor si el input está activo y el cursor es visible
-    if input_active and show_cursor:
-        text_width = input_key_surf.get_width()
-        cursor_x = rect_input_key.left + 5 + text_width
-        # Asegurarse de que el cursor no se dibuje más allá del borde derecho del campo de entrada
-        if cursor_x > rect_input_key.right - 3: # 3px de padding derecho para el cursor
-            cursor_x = rect_input_key.right - 3
-        
-        pygame.draw.line(screen, color_texto, 
-                         (cursor_x, rect_input_key.top + 5), 
-                         (cursor_x, rect_input_key.bottom - 5), 1)
-    
-    pygame.display.flip()
-    return rect_input_key, rect_boton_activar, rect_boton_salir_app, rect_boton_guardar_id, rect_boton_usar_archivo, rect_boton_copiar_id, rect_boton_obtener_licencia
-
-# --- Función para manejar la ventana de activación ---
-def run_activation_sequence(screen, current_internal_id, current_display_id):
-    """
-    Maneja la lógica y el bucle de eventos para la ventana de activación.
-    Devuelve True si la activación fue exitosa, False en caso contrario.
-    Actualiza las variables globales PROGRAM_MODE y ACTIVATED_SUCCESSFULLY.
-    """
-    global PROGRAM_MODE, ACTIVATED_SUCCESSFULLY, user_license_key_input # Necesitamos user_license_key_input si se mantiene entre llamadas
-                                                                    # o se reinicia cada vez. Por ahora, reiniciemos.
-    
-    user_license_key_input = "" # Reiniciar para cada vez que se muestra la ventana
-    activation_error_message = None
-    id_saved_message = None 
-    id_saved_message_timer = 0 
-    activation_window_active = True
-    input_key_active = False 
-
-    cursor_visible = True
-    cursor_blink_timer = 0
-
-
-    while activation_window_active:
-        current_time_millis = pygame.time.get_ticks()
-        if id_saved_message and current_time_millis > id_saved_message_timer:
-            id_saved_message = None 
-        
-        if current_time_millis - cursor_blink_timer > CURSOR_BLINK_INTERVAL:
-            cursor_visible = not cursor_visible
-            cursor_blink_timer = current_time_millis
-        
-        current_display_message = activation_error_message if activation_error_message else id_saved_message
-
-        # Llamada a draw_activation_window
-        # Asegurarse que los parámetros coinciden con la definición de draw_activation_window
-        drawn_rects = draw_activation_window(
-            screen, 
-            current_display_id, # Renombrado para claridad, antes era display_id
-            user_license_key_input, 
-            current_display_message, 
-            input_key_active, 
-            cursor_visible
-        )
-        rect_input_key_field, rect_btn_activar, rect_btn_salir_app, \
-        rect_boton_guardar_id, rect_boton_usar_archivo, rect_boton_copiar_id, rect_boton_obtener_licencia = drawn_rects
-        
-        for evento_activacion in pygame.event.get():
-            if evento_activacion.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit() 
-            if evento_activacion.type == pygame.MOUSEBUTTONDOWN:
-                if evento_activacion.button == 1:
-                    if rect_btn_activar.collidepoint(evento_activacion.pos):
-                        if verify_license_key(user_license_key_input, current_internal_id): # current_internal_id
-                            store_license_data(user_license_key_input, current_internal_id) # current_internal_id
-                            ACTIVATED_SUCCESSFULLY = True
-                            PROGRAM_MODE = "LICENSED"
-                            delete_trial_info()
-                            activation_window_active = False 
-                            print("Licencia activada exitosamente.")
-                        else:
-                            activation_error_message = "Clave de licencia inválida. Intente de nuevo."
-                            user_license_key_input = "" 
-                    elif rect_btn_salir_app.collidepoint(evento_activacion.pos):
-                        activation_window_active = False 
-                        # La lógica de si se inicia trial o no al salir, se manejará fuera,
-                        # basado en el valor de retorno de esta función y el estado previo.
-                    elif rect_boton_obtener_licencia.collidepoint(evento_activacion.pos):
-                        input_key_active = False
-                        activation_error_message = "Solicitando licencia en línea..."
-                        id_saved_message = None
-                        draw_activation_window(screen, current_display_id, user_license_key_input, activation_error_message, input_key_active, cursor_visible)
-                        pygame.display.flip()
-
-                        if verificar_y_obtener_licencia():
-                            ACTIVATED_SUCCESSFULLY = True
-                            PROGRAM_MODE = "LICENSED"
-                            delete_trial_info()
-                            activation_window_active = False
-                            print("Licencia obtenida y activada exitosamente.")
-                        else:
-                            activation_error_message = "No se pudo obtener la licencia. Inténtelo más tarde o active manualmente."
-                            id_saved_message_timer = pygame.time.get_ticks() + 3000
-
-                    elif rect_boton_usar_archivo.collidepoint(evento_activacion.pos):
-                        input_key_active = False; activation_error_message = None; id_saved_message = None
-                        if TKINTER_AVAILABLE:
-                            root = tk.Tk(); root.withdraw()
-                            filepath = filedialog.askopenfilename(title="Seleccione el archivo de licencia (.json)", filetypes=(("JSON files", "*.json"), ("All files", "*.*")))
-                            root.destroy()
-                            if filepath:
-                                try:
-                                    with open(filepath, 'r') as f_import: data_importada = json.load(f_import)
-                                    clave_importada = data_importada.get("license_key")
-                                    id_maquina_importado = data_importada.get("machine_identifier")
-                                    if clave_importada and id_maquina_importado:
-                                        if id_maquina_importado == current_internal_id: # current_internal_id
-                                            if verify_license_key(clave_importada, id_maquina_importado):
-                                                store_license_data(clave_importada, id_maquina_importado)
-                                                ACTIVATED_SUCCESSFULLY = True; PROGRAM_MODE = "LICENSED"; delete_trial_info()
-                                                activation_window_active = False
-                                            else: activation_error_message = "Clave en archivo de licencia es inválida."
-                                        else: activation_error_message = "Licencia no corresponde a esta máquina."
-                                    else: activation_error_message = "Archivo de licencia con formato incorrecto."
-                                except Exception as e_import: activation_error_message = f"Error al procesar archivo: {e_import}"
-                        else: activation_error_message = "Tkinter no disponible."
-                        id_saved_message_timer = current_time_millis + 3000
-                    
-                    elif rect_boton_copiar_id.collidepoint(evento_activacion.pos):
-                        input_key_active = False; activation_error_message = None
-                        if PYPERCLIP_AVAILABLE:
-                            try: pyperclip.copy(current_display_id); id_saved_message = "ID de Máquina copiado." # current_display_id
-                            except Exception: id_saved_message = "Error al copiar ID."
-                        else: id_saved_message = "Copiar ID no disponible."
-                        id_saved_message_timer = current_time_millis + 3000
-                    elif rect_boton_guardar_id.collidepoint(evento_activacion.pos):
-                        input_key_active = False; activation_error_message = None
-                        if save_id_to_file(current_display_id): id_saved_message = f"ID guardado en machine_id.txt" # current_display_id
-                        else: id_saved_message = "Error al guardar ID."
-                        id_saved_message_timer = current_time_millis + 3000
-                    elif rect_input_key_field.collidepoint(evento_activacion.pos):
-                        input_key_active = True; activation_error_message = None; id_saved_message = None
-                    else:
-                        input_key_active = False
-            
-            if evento_activacion.type == pygame.KEYDOWN and input_key_active:
-                if evento_activacion.key == pygame.K_RETURN:
-                    if verify_license_key(user_license_key_input, current_internal_id): # current_internal_id
-                        store_license_data(user_license_key_input, current_internal_id) # current_internal_id
-                        ACTIVATED_SUCCESSFULLY = True; PROGRAM_MODE = "LICENSED"; delete_trial_info()
-                        activation_window_active = False
-                    else:
-                        activation_error_message = "Clave de licencia inválida."; user_license_key_input = ""
-                elif evento_activacion.key == pygame.K_BACKSPACE: user_license_key_input = user_license_key_input[:-1]
-                elif evento_activacion.key == pygame.K_v and (pygame.key.get_mods() & pygame.KMOD_CTRL or pygame.key.get_mods() & pygame.KMOD_META):
-                    if PYPERCLIP_AVAILABLE:
-                        try:
-                                pasted_text = pyperclip.paste() # Punto y coma eliminado de aquí también para consistencia
-                                remaining_len = 32 - len(user_license_key_input)
-                                # No convertir a .upper() al pegar
-                                user_license_key_input += pasted_text[:remaining_len] # Punto y coma eliminado
-                                user_license_key_input = user_license_key_input[:32] # Asegurar longitud
-                        except Exception: pass 
-                elif evento_activacion.unicode.isalnum() and len(user_license_key_input) < 32: # Permitir solo alfanuméricos
-                    user_license_key_input += evento_activacion.unicode # No convertir a .upper()
-    
-    return ACTIVATED_SUCCESSFULLY # Devuelve el estado de activación
-
-# --- Función para formatear el tiempo restante del periodo de gracia ---
-def format_remaining_grace_time(start_time_utc: datetime | None) -> str | None:
-
-    if start_time_utc is None:
-        return None
-
-    try:
-        # Asegurarse que start_time_utc es aware, si no lo es, asumirlo UTC (aunque debería serlo)
-        if start_time_utc.tzinfo is None or start_time_utc.tzinfo.utcoffset(start_time_utc) is None:
-            # Esto es un fallback, idealmente start_time_utc siempre es aware.
-            start_time_utc = start_time_utc.replace(tzinfo=timezone.utc)
-
-        end_time_utc = start_time_utc + timedelta(days=1)
-        now_utc = datetime.now(timezone.utc)
-        remaining_delta = end_time_utc - now_utc
-
-        if remaining_delta.total_seconds() <= 0:
-            return None # O podría ser "Expirado"
-
-        total_seconds = int(remaining_delta.total_seconds())
-        
-        days = total_seconds // (24 * 3600)
-        total_seconds %= (24 * 3600)
-        
-        hours = total_seconds // 3600
-        total_seconds %= 3600
-        
-        minutes = total_seconds // 60
-        seconds = total_seconds % 60
-
-        if days > 0:
-            return f"{days}d {hours:02}h {minutes:02}m" # No mostrar segundos si hay días
-        else:
-            return f"{hours:02}h {minutes:02}m {seconds:02}s"
-
-    except Exception as e:
-        print(f"Error al formatear tiempo restante de gracia: {e}")
-        return None
-
-
-def reset_simulation_state():
-    """Inicializa o resetea los parámetros de la simulación circular."""
-    global sim_initialized, sim_center_lat, sim_center_lon, sim_angle_on_circle_deg
-    global ts_lat_decimal, ts_lon_decimal, ts_heading_float, ts_speed_float, ts_altitude_float, ts_pitch_float, ts_roll_float
-    
-    start_lat_deg, start_lon_deg, initial_heading_deg = -12.0, -77.716667, 10.0
-    
-    bearing_to_center_rad = math.radians((initial_heading_deg + 90) % 360)
-    R, start_lat_rad = 6378137, math.radians(start_lat_deg)
-    
-    d_lat = sim_radius_meters * math.cos(bearing_to_center_rad)
-    d_lon = sim_radius_meters * math.sin(bearing_to_center_rad)
-    
-    sim_center_lat = start_lat_deg + (d_lat / R) * (180 / math.pi)
-    sim_center_lon = start_lon_deg + (d_lon / (R * math.cos(start_lat_rad))) * (180 / math.pi)
-    
-    sim_angle_on_circle_deg = (math.degrees(bearing_to_center_rad) + 180) % 360
-    
-    ts_lat_decimal, ts_lon_decimal, ts_heading_float, ts_speed_float, ts_altitude_float, ts_pitch_float, ts_roll_float = \
-        start_lat_deg, start_lon_deg, initial_heading_deg, 12.0, 10.0, 0.0, 0.0
-    
-    sim_initialized = True
-
-def generar_datos_simulados(dt_seconds):
-    """Genera y actualiza las variables de datos con valores de la simulación circular."""
-    global ts_pitch_float, att_pitch_str, ts_roll_float, att_roll_str, ts_lat_decimal, latitude_str, ts_lon_decimal, longitude_str
-    global ts_speed_float, speed_str, ts_heading_float, heading_str, ts_altitude_float, altitude_str, ultima_vez_datos_recibidos, ts_timestamp_str
-    global sim_initialized, sim_angle_on_circle_deg
-
-    if not sim_initialized:
-        reset_simulation_state()
-
-    current_speed_kts = 12.0 + random.uniform(-2.0, 2.0)
-    distancia_recorrida_m = (current_speed_kts * 0.514444) * dt_seconds
-    angular_change_deg = math.degrees(distancia_recorrida_m / sim_radius_meters)
-    sim_angle_on_circle_deg = (sim_angle_on_circle_deg + angular_change_deg) % 360
-
-    R, center_lat_rad = 6378137, math.radians(sim_center_lat)
-    bearing_rad = math.radians(sim_angle_on_circle_deg)
-    
-    d_lat_m = sim_radius_meters * math.cos(bearing_rad)
-    d_lon_m = sim_radius_meters * math.sin(bearing_rad)
-
-    ts_lat_decimal = sim_center_lat + (d_lat_m / R) * (180 / math.pi)
-    ts_lon_decimal = sim_center_lon + (d_lon_m / (R * math.cos(center_lat_rad))) * (180 / math.pi)
-    
-    latitude_str = f"{abs(ts_lat_decimal):.4f}° {'N' if ts_lat_decimal >= 0 else 'S'}"
-    longitude_str = f"{abs(ts_lon_decimal):.4f}° {'E' if ts_lon_decimal >= 0 else 'W'}"
-
-    ts_heading_float = (sim_angle_on_circle_deg + 90) % 360
-    heading_str = f"{ts_heading_float:.0f}°"
-
-    ts_speed_float = current_speed_kts
-    speed_str = f"{ts_speed_float:.1f} Kt"
-    
-    ts_altitude_float = 10.0 + random.uniform(-1.5, 1.5)
-    altitude_str = f"{ts_altitude_float:.1f} M"
-
-    ts_pitch_float = random.uniform(-5.0, 5.0)
-    att_pitch_str = f"{ts_pitch_float:.1f}"
-
-    ts_roll_float = random.uniform(-8.0, 8.0)
-    att_roll_str = f"{ts_roll_float:.1f}"
-    
-    ts_timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    ultima_vez_datos_recibidos = pygame.time.get_ticks()
-
-def main():
     global IDIOMA, sonido_alarma_actualmente_reproduciendo, tiempo_ultimo_sonido_iniciado, INDICE_PROXIMA_ALARMA_A_SONAR
     global ultima_reproduccion_alarma_babor_tiempo, ultima_reproduccion_alarma_estribor_tiempo, ultima_reproduccion_alarma_sentado_tiempo, ultima_reproduccion_alarma_encabuzado_tiempo
     global ultima_vez_envio_datos, ultimo_intento_reconeccion_tiempo, network_available, last_network_check_time
@@ -2481,27 +2058,27 @@ def main():
                 umbral_min_roll_float = float(valores_alarma["min_roll_neg"])
                 umbral_max_roll_float = float(valores_alarma["max_roll_pos"])
                 
-                # Alarma Roll Babor
-                condicion_babor = ts_roll_float < umbral_min_roll_float if att_roll_str != "N/A" else False
+                # Alarma Roll Babor (ahora activada por valores POSITIVOS)
+                condicion_babor = ts_roll_float > umbral_max_roll_float if att_roll_str != "N/A" else False
                 if condicion_babor and not alarma_roll_babor_activa:
-                    msg_alarma = f"ALARMA ROLL BABOR ACTIVADA. Valor: {ts_roll_float:.1f}°, Umbral: {umbral_min_roll_float:.1f}°"
-                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_BABOR", "ACTIVANDO", ts_roll_float, umbral_min_roll_float)
+                    msg_alarma = f"ALARMA ROLL BABOR ACTIVADA. Valor: {ts_roll_float:.1f}°, Umbral: {umbral_max_roll_float:.1f}°"
+                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_BABOR", "ACTIVANDO", ts_roll_float, umbral_max_roll_float)
                     agregar_a_consola(msg_alarma)
                 elif not condicion_babor and alarma_roll_babor_activa:
                     msg_alarma = f"ALARMA ROLL BABOR DESACTIVADA. Valor: {ts_roll_float:.1f}°"
-                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_BABOR", "DESACTIVANDO", ts_roll_float, umbral_min_roll_float)
+                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_BABOR", "DESACTIVANDO", ts_roll_float, umbral_max_roll_float)
                     agregar_a_consola(msg_alarma)
                 alarma_roll_babor_activa = condicion_babor
 
-                # Alarma Roll Estribor
-                condicion_estribor = ts_roll_float > umbral_max_roll_float if att_roll_str != "N/A" else False
+                # Alarma Roll Estribor (ahora activada por valores NEGATIVOS)
+                condicion_estribor = ts_roll_float < umbral_min_roll_float if att_roll_str != "N/A" else False
                 if condicion_estribor and not alarma_roll_estribor_activa:
-                    msg_alarma = f"ALARMA ROLL ESTRIBOR ACTIVADA. Valor: {ts_roll_float:.1f}°, Umbral: {umbral_max_roll_float:.1f}°"
-                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_ESTRIBOR", "ACTIVANDO", ts_roll_float, umbral_max_roll_float)
+                    msg_alarma = f"ALARMA ROLL ESTRIBOR ACTIVADA. Valor: {ts_roll_float:.1f}°, Umbral: {umbral_min_roll_float:.1f}°"
+                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_ESTRIBOR", "ACTIVANDO", ts_roll_float, umbral_min_roll_float)
                     agregar_a_consola(msg_alarma)
                 elif not condicion_estribor and alarma_roll_estribor_activa:
                     msg_alarma = f"ALARMA ROLL ESTRIBOR DESACTIVADA. Valor: {ts_roll_float:.1f}°"
-                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_ESTRIBOR", "DESACTIVANDO", ts_roll_float, umbral_max_roll_float)
+                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_ESTRIBOR", "DESACTIVANDO", ts_roll_float, umbral_min_roll_float)
                     agregar_a_consola(msg_alarma)
                 alarma_roll_estribor_activa = condicion_estribor
 
@@ -2693,7 +2270,7 @@ def main():
         if roll_image_base_grande and att_roll_str != "N/A":
             try:
                 valor_roll_float = float(att_roll_str)
-                angulo_rotacion_pygame_roll = -valor_roll_float
+                angulo_rotacion_pygame_roll = valor_roll_float
                 imagen_roll_rotada_grande = pygame.transform.rotate(roll_image_base_grande, angulo_rotacion_pygame_roll)
                 diametro_claraboya_roll = 2 * radio_circulo_img
                 claraboya_surface_roll = pygame.Surface((diametro_claraboya_roll, diametro_claraboya_roll), pygame.SRCALPHA)
@@ -2735,21 +2312,21 @@ def main():
                             
                     letra_roll_str = ""
                     if valor_roll_float > 0.1: # Positivo es Estribor (Starboard)
-                        letra_roll_str = "S"
-                    elif valor_roll_float < -0.1: # Negativo es Babor (Port)
                         letra_roll_str = "P"
+                    elif valor_roll_float < -0.1: # Negativo es Babor (Port)
+                        letra_roll_str = "S"
                     if letra_roll_str:
                         letra_roll_surf = font_circulos_textos.render(letra_roll_str, True, COLOR_LETRA_ROLL)
                         letra_roll_rect = letra_roll_surf.get_rect(midtop=(roll_valor_rect.centerx, roll_valor_rect.bottom + OFFSET_LETRA_ROLL_Y))
                         screen.blit(letra_roll_surf, letra_roll_rect)
 
                     pos_flecha_roll_y_centro = roll_valor_rect.centery
-                    if valor_roll_float > 0.1: # Positivo (Estribor), flecha VERDE a la DERECHA
+                    if valor_roll_float < -0.1: # Positivo (Estribor), flecha VERDE a la DERECHA
                         pos_flecha_roll_x = roll_valor_rect.right + OFFSET_FLECHA_TEXTO + (LONGITUD_FLECHA_DIR // 2)
                         pygame.draw.line(screen, VERDE, (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
                         pygame.draw.line(screen, VERDE, (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro - ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
                         pygame.draw.line(screen, VERDE, (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2 - ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro + ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
-                    elif valor_roll_float < -0.1: # Negativo (Babor), flecha ROJA a la IZQUIERDA
+                    elif valor_roll_float > 0.1: # Negativo (Babor), flecha ROJA a la IZQUIERDA
                         pos_flecha_roll_x = roll_valor_rect.left - OFFSET_FLECHA_TEXTO - (LONGITUD_FLECHA_DIR // 2)
                         pygame.draw.line(screen, ROJO, (pos_flecha_roll_x + LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
                         pygame.draw.line(screen, ROJO, (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2 + ANCHO_FLECHA_DIR // 2, pos_flecha_roll_y_centro - ANCHO_FLECHA_DIR // 2), (pos_flecha_roll_x - LONGITUD_FLECHA_DIR // 2, pos_flecha_roll_y_centro), 2)
@@ -2879,10 +2456,10 @@ def main():
             try:
                 roll_val = float(att_roll_str)
                 roll_valor_display_str = f"{roll_val:+.1f}°"
-                if roll_val > 0.1: # Si es POSITIVO, es ESTRIBOR
-                    roll_direccion_str = "ESTRIBOR" if IDIOMA == "es" else "STARBOARD"
-                elif roll_val < -0.1: # Si es NEGATIVO, es BABOR
+                if roll_val > 0.1: # Si es POSITIVO, es BABOR
                     roll_direccion_str = "BABOR" if IDIOMA == "es" else "PORT"
+                elif roll_val < -0.1: # Si es NEGATIVO, es ESTRIBOR
+                    roll_direccion_str = "ESTRIBOR" if IDIOMA == "es" else "STARBOARD"
             except ValueError:
                 pass
         
@@ -3760,49 +3337,4 @@ def draw_test_window(screen, font_test, buffer_datos, copy_message=None):
 # Punto de entrada del programa
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
