@@ -220,6 +220,7 @@ INTERVALO_REPETICION_ALARMA_PITCH_S = 5
 ARCHIVO_CONFIG_SERIAL = get_persistent_data_path("config_serial.json") # MODIFICADO
 ARCHIVO_CONFIG_ALARMA = get_persistent_data_path("config_alarma.json") # MODIFICADO
 FIRST_RUN_FILE = get_persistent_data_path("first_run.json")
+SQL_BUFFER_FILE = get_persistent_data_path("sql_buffer.json")
 
 # Variables globales
 network_available = True
@@ -292,6 +293,7 @@ MAX_LINEAS_TEST_SERIAL = 100
 
 # Buffer para reensamblar tramas NMEA fragmentadas
 nmea_buffer = ""
+sql_buffer_lock = threading.Lock()
 
 # Inicialización de Pygame
 pygame.init()
@@ -1037,30 +1039,68 @@ def enviar_thingspeak():
     thread.daemon = True # El hilo no impedirá que el programa se cierre
     thread.start()
 
-def worker_enviar_sql(payload):
-    """Esta función se ejecuta en un hilo separado para no bloquear la UI."""
+def guardar_en_buffer_sql(lista_payloads):
+    """Guarda una lista de payloads en el archivo de buffer JSON de forma segura."""
+    with sql_buffer_lock:
+        try:
+            buffer_existente = []
+            if os.path.exists(SQL_BUFFER_FILE):
+                with open(SQL_BUFFER_FILE, 'r') as f:
+                    # Si el archivo está vacío o corrupto, json.load falla.
+                    contenido = f.read()
+                    if contenido:
+                        buffer_existente = json.loads(contenido)
+            
+            # Asegurarse de que el buffer existente es una lista
+            if not isinstance(buffer_existente, list):
+                buffer_existente = []
+
+            buffer_existente.extend(lista_payloads)
+            
+            with open(SQL_BUFFER_FILE, 'w') as f:
+                json.dump(buffer_existente, f, indent=4)
+            
+            msg = f"SQL Buffer: Guardados {len(lista_payloads)} registros en buffer. Total: {len(buffer_existente)}."
+            print(f"[INFO] {msg}")
+            agregar_a_consola(msg)
+
+        except (IOError, json.JSONDecodeError) as e:
+            msg_err = f"SQL Buffer: ERROR al guardar en buffer: {e}"
+            print(f"[ERROR] {msg_err}")
+            agregar_a_consola(msg_err)
+
+
+def worker_enviar_sql(lista_payloads):
+    """
+    Envía una lista de registros a Azure SQL usando executemany.
+    Si falla, guarda los datos en un buffer local.
+    Esta función se ejecuta en un hilo separado para no bloquear la UI.
+    """
     global network_available
+
+    if not lista_payloads:
+        return
 
     # --- Detección automática de Driver ODBC ---
     sql_server_driver = None
     try:
         available_drivers = pyodbc.drivers()
-        # Palabras clave para buscar, en orden de preferencia (de más nuevo a más antiguo)
         preferred_keywords = ["ODBC Driver 18", "ODBC Driver 17", "Native Client", "SQL Server"]
         
         for keyword in preferred_keywords:
             for driver in available_drivers:
                 if keyword in driver:
                     sql_server_driver = driver
-                    break  # Encontramos el mejor driver posible, salir del bucle interno
+                    break
             if sql_server_driver:
-                break # Salir del bucle externo también
+                break
     
     except Exception as e:
         msg_sql_err = f"Azure SQL: Error al listar drivers ODBC: {e}"
         print(f"[ERROR] {msg_sql_err}")
         agregar_a_consola(msg_sql_err)
         network_available = False
+        guardar_en_buffer_sql(lista_payloads) # Guardar en buffer si falla la detección de driver
         return
 
     if not sql_server_driver:
@@ -1068,8 +1108,9 @@ def worker_enviar_sql(payload):
         print(f"[ERROR] {msg_sql_err}")
         print(f"INFO: Drivers disponibles en el sistema: {available_drivers}")
         agregar_a_consola(msg_sql_err)
-        agregar_a_consola(f"Drivers: {available_drivers}") # Añadir a la consola para depuración del usuario
+        agregar_a_consola(f"Drivers: {available_drivers}")
         network_available = False
+        guardar_en_buffer_sql(lista_payloads) # Guardar en buffer si no hay driver
         return
     # --- Fin de la detección automática ---
 
@@ -1091,54 +1132,96 @@ def worker_enviar_sql(payload):
         print(f"[ERROR] {msg_sql_err} - {ex}")
         agregar_a_consola(f"Azure SQL: Fallo conexión. Verifique red y contraseña.")
         network_available = False
-        return # Salir si la conexión falla
+        guardar_en_buffer_sql(lista_payloads) # Guardar en buffer si la conexión falla
+        return
     except Exception as e:
-        # Captura de otros posibles errores en la conexión
         msg_sql_err = f"Azure SQL: Error inesperado al conectar: {e}"
         print(f"[ERROR] {msg_sql_err}")
         agregar_a_consola(msg_sql_err)
         network_available = False
+        guardar_en_buffer_sql(lista_payloads) # Guardar en buffer por otros errores
         return
 
     try:
         with conn.cursor() as cursor:
             sql_insert = """
             INSERT INTO [dbo].[Sensor_Flota] 
-            (ShipID, Date_event, Pitch, Roll, Latitud,Longitud , Velocidad, Rumbo, Rot, Sentina1, Sentina2) 
+            (ShipID, Date_event, Pitch, Roll, Latitud, Longitud, Velocidad, Rumbo, Rot, Sentina1, Sentina2) 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
-            cursor.execute(sql_insert, 
-                           payload['ShipID'], 
-                           payload['Date_event'], 
-                           payload['Pitch'], 
-                           payload['Roll'], 
-                           payload['Latitud'], 
-                           payload['Longitud'], 
-                           payload['Velocidad'], 
-                           payload['Rumbo'], 
-                           payload['Rot'], 
-                           payload['Sentina1'],
-                           payload['Sentina2'],)
+            # Preparar los datos para executemany
+            datos_para_insertar = [
+                (p['ShipID'], p['Date_event'], p['Pitch'], p['Roll'], p['Latitud'], 
+                 p['Longitud'], p['Velocidad'], p['Rumbo'], p['Rot'], 
+                 p['Sentina1'], p['Sentina2'])
+                for p in lista_payloads
+            ]
+            
+            cursor.executemany(sql_insert, datos_para_insertar)
             conn.commit()
-            msg_sql = "Azure SQL: Conexión OK y datos enviados."
+            
+            msg_sql = f"Azure SQL: Conexión OK. {len(datos_para_insertar)} registros enviados."
             print(f"[OK] {msg_sql}")
             agregar_a_consola(msg_sql)
             network_available = True
+            
+            # Si el envío fue exitoso, se podría limpiar el buffer aquí si esta función
+            # fuera la única responsable de enviarlo, pero lo haremos en el paso siguiente.
+
     except pyodbc.Error as ex:
         print(f"❌ Error al interactuar con la base de datos: {ex}")
         msg_sql_err = f"Azure SQL: Error de base de datos - {ex}"
         print(f"[ERROR] {msg_sql_err}")
         agregar_a_consola(msg_sql_err)
         network_available = False
+        guardar_en_buffer_sql(lista_payloads) # Guardar en buffer si el INSERT falla
     except Exception as e:
         print(f"❌ Error inesperado de SQL: {e}")
         msg_sql_conn_err = f"Azure SQL: Error de conexión - {e}"
         print(f"[ERROR] {msg_sql_conn_err}")
         agregar_a_consola(msg_sql_conn_err)
         network_available = False
+        guardar_en_buffer_sql(lista_payloads) # Guardar en buffer por otros errores
     finally:
         if conn:
             conn.close()
+
+def reenviar_buffer_sql_si_necesario():
+    """
+    Comprueba si hay datos en el buffer SQL y, si hay conexión,
+    intenta reenviarlos en un hilo separado.
+    """
+    if not network_available or not os.path.exists(SQL_BUFFER_FILE) or os.path.getsize(SQL_BUFFER_FILE) == 0:
+        return
+
+    with sql_buffer_lock:
+        try:
+            with open(SQL_BUFFER_FILE, 'r') as f:
+                buffer_a_enviar = json.load(f)
+            
+            if not buffer_a_enviar or not isinstance(buffer_a_enviar, list):
+                return
+
+            # Si hay datos, vaciar el archivo de buffer ANTES de intentar enviar.
+            # Si el envío falla, los datos se volverán a escribir en el buffer.
+            # Esto previene bucles de reenvío infinitos de los mismos datos.
+            with open(SQL_BUFFER_FILE, 'w') as f:
+                json.dump([], f)
+
+            msg = f"SQL Buffer: Reenviando {len(buffer_a_enviar)} registros desde el buffer."
+            print(f"[INFO] {msg}")
+            agregar_a_consola(msg)
+
+            # Iniciar el worker de SQL en un hilo para enviar los datos del buffer
+            sql_thread = threading.Thread(target=worker_enviar_sql, args=(buffer_a_enviar,))
+            sql_thread.daemon = True
+            sql_thread.start()
+
+        except (IOError, json.JSONDecodeError) as e:
+            msg_err = f"SQL Buffer: ERROR al leer o procesar el buffer para reenvío: {e}"
+            print(f"[ERROR] {msg_err}")
+            agregar_a_consola(msg_err)
+
 
 def enviar_y_guardar_datos_periodicamente():
     """Guarda en CSV y envía a servicios en la nube a intervalos regulares."""
@@ -1147,9 +1230,25 @@ def enviar_y_guardar_datos_periodicamente():
     if time.time() - ultima_vez_envio_datos < INTERVALO_ENVIO_DATOS_S:
         return
 
-    # Solo proceder si hay datos válidos
+    # --- 1. Reenviar datos del buffer si es necesario ---
+    # Esta función se ejecutará primero y, si hay datos en el buffer y red,
+    # iniciará un hilo para enviarlos.
+    if SERVICIO_DATOS_ACTUAL == "azure_sql":
+        reenviar_buffer_sql_si_necesario()
+
+    # --- 2. Procesar y enviar datos actuales ---
+    # Solo proceder si hay datos válidos del sensor.
     if not (serial_port_available and not nmea_data_stale):
         ultima_vez_envio_datos = time.time() # Resetear timer para no reintentar inmediatamente
+        return
+
+    # Evitar el envío de registros con todos los valores numéricos en cero
+    if (ts_pitch_float == 0.0 and ts_roll_float == 0.0 and
+        ts_lat_decimal == 0.0 and ts_lon_decimal == 0.0 and
+        ts_speed_float == 0.0 and ts_heading_float == 0.0 and rot_float == 0.0):
+        print("INFO: Se omite el envío de un registro con todos los valores numéricos en cero.")
+        agregar_a_consola("Omitido: Registro de datos nulos.")
+        ultima_vez_envio_datos = time.time() # Asegurarse de que el temporizador se reinicie
         return
 
     # Preparar estado de alarma para logging y envío
@@ -1184,7 +1283,8 @@ def enviar_y_guardar_datos_periodicamente():
                 'Sentina1': switch1_status,
                 'Sentina2': switch2_status
             }
-            sql_thread = threading.Thread(target=worker_enviar_sql, args=(payload_sql,))
+            # Enviar el nuevo payload como una lista de un solo elemento
+            sql_thread = threading.Thread(target=worker_enviar_sql, args=([payload_sql],))
             sql_thread.daemon = True
             sql_thread.start()
     
@@ -1222,6 +1322,13 @@ def procesar_datos_serie():
                     if len(datos_test_serial_buffer) >= MAX_LINEAS_TEST_SERIAL:
                         datos_test_serial_buffer.pop(0)
                     datos_test_serial_buffer.append(line)
+
+                # Si los datos son obsoletos (stale), cualquier línea válida los activará.
+                if nmea_data_stale:
+                    # Una vez que recibimos cualquier línea válida, marcamos los datos como frescos.
+                    nmea_data_stale = False
+                    print("INFO: Primera trama NMEA recibida. El envío de datos está activado.")
+                    agregar_a_consola("NMEA: Datos recibidos, envío activado.")
 
                 # Parsear las sentencias NMEA completas
                 if line.startswith('$GPGLL') or line.startswith('$GNGLL'):
@@ -1539,7 +1646,7 @@ def main():
     else:
         window_visible = False
         
-    nmea_data_stale = False
+    nmea_data_stale = True
 
     tray_thread = threading.Thread(target=setup_tray_icon)
     tray_thread.daemon = True
