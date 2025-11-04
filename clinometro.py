@@ -120,6 +120,7 @@ TEXTOS = {
         "opcion_google_cloud": "Azure SQL",
         "etiqueta_apikey_thingspeak": "API Key ThingSpeak:",
         "etiqueta_apikey_google_cloud": "Nombre del Barco:",
+        "etiqueta_servidor_azure": "Servidor:",
         "etiqueta_password_azure": "Contraseña:",
         "titulo_password_servicio": "Ingrese Contraseña",
         "etiqueta_password": "Contraseña:",
@@ -172,6 +173,7 @@ TEXTOS = {
         "opcion_google_cloud": "Azure SQL",
         "etiqueta_apikey_thingspeak": "ThingSpeak API Key:",
         "etiqueta_apikey_google_cloud": "Ship Name:",
+        "etiqueta_servidor_azure": "Server:",
         "etiqueta_password_azure": "Password:",
         "titulo_password_servicio": "Enter Password",
         "etiqueta_password": "Password:",
@@ -198,10 +200,10 @@ API_KEY_THINGSPEAK = "5TRR6EXF6N5CZF54"
 THINGSPEAK_URL = "https://api.thingspeak.com/update"
 
 # Configuración para Azure SQL
-AZURE_SQL_SERVER = "srv-db-east-us-estabilidadep.database.windows.net"
+AZURE_SQL_SERVER = "srv-db-east-us-estabilidadep.database.windows.net"  # Default value
 AZURE_SQL_DATABASE = "db_estabilidadep_prd"
 AZURE_SQL_USER = "svc_writer_ep"
-AZURE_SQL_PASSWORD = "" # El usuario final anadira la contrasena aqui
+AZURE_SQL_PASSWORD = "" 
 
 # Configuración para logging y ThingSpeak
 API_KEY_THINGSPEAK = "5TRR6EXF6N5CZF54"
@@ -221,6 +223,7 @@ ARCHIVO_CONFIG_SERIAL = get_persistent_data_path("config_serial.json") # MODIFIC
 ARCHIVO_CONFIG_ALARMA = get_persistent_data_path("config_alarma.json") # MODIFICADO
 FIRST_RUN_FILE = get_persistent_data_path("first_run.json")
 SQL_BUFFER_FILE = get_persistent_data_path("sql_buffer.json")
+THINGSPEAK_BUFFER_FILE = get_persistent_data_path("thingspeak_buffer.json")
 
 # Variables globales
 network_available = True
@@ -278,6 +281,7 @@ API_KEY_GOOGLE_CLOUD = ""  # Para almacenar la API Key de Google Cloud
 # Variables para los campos de texto en la ventana de configuración del servicio
 input_api_key_thingspeak_str = API_KEY_THINGSPEAK # Se inicializará desde config o default
 input_api_key_google_cloud_str = "" # Se inicializará desde config o default
+input_server_azure_str = ""  # Nueva variable para el servidor
 input_password_azure_str = "" # Para el campo de contraseña de Azure
 
 # Variables para la ventana de contraseña del servicio de datos
@@ -294,6 +298,7 @@ MAX_LINEAS_TEST_SERIAL = 100
 # Buffer para reensamblar tramas NMEA fragmentadas
 nmea_buffer = ""
 sql_buffer_lock = threading.Lock()
+thingspeak_buffer_lock = threading.Lock()
 
 # Inicialización de Pygame
 pygame.init()
@@ -367,8 +372,8 @@ def reproducir_alarma(tipo_alarma):
 
 # Funciones de configuración
 def cargar_configuracion_serial():
-    global IDIOMA, SERVICIO_DATOS_ACTUAL, API_KEY_THINGSPEAK, API_KEY_GOOGLE_CLOUD, AZURE_SQL_PASSWORD
-    global input_api_key_thingspeak_str, input_api_key_google_cloud_str, input_password_azure_str
+    global IDIOMA, SERVICIO_DATOS_ACTUAL, API_KEY_THINGSPEAK, API_KEY_GOOGLE_CLOUD, AZURE_SQL_SERVER, AZURE_SQL_PASSWORD
+    global input_api_key_thingspeak_str, input_api_key_google_cloud_str, input_server_azure_str, input_password_azure_str
     try:
         with open(ARCHIVO_CONFIG_SERIAL, 'r') as f:
             encoded_config_str = f.read()
@@ -382,14 +387,17 @@ def cargar_configuracion_serial():
         
         # Cargar configuración del servicio de datos
         SERVICIO_DATOS_ACTUAL = config.get('servicio_datos', 'thingspeak')
-        API_KEY_THINGSPEAK = config.get('api_key_thingspeak', API_KEY_THINGSPEAK)
-        API_KEY_GOOGLE_CLOUD = config.get('api_key_google_cloud', '')
-        AZURE_SQL_PASSWORD = config.get('password_azure', '') # Cargar la contraseña
+        # Usar .strip() para eliminar espacios en blanco accidentales (como nuevas líneas)
+        API_KEY_THINGSPEAK = config.get('api_key_thingspeak', API_KEY_THINGSPEAK).strip()
+        API_KEY_GOOGLE_CLOUD = config.get('api_key_google_cloud', '').strip()
+        AZURE_SQL_SERVER = config.get('servidor_azure', AZURE_SQL_SERVER).strip()
+        AZURE_SQL_PASSWORD = config.get('password_azure', '').strip()
         
         # Inicializar los strings de input para la UI
         input_api_key_thingspeak_str = API_KEY_THINGSPEAK
         input_api_key_google_cloud_str = API_KEY_GOOGLE_CLOUD
-        input_password_azure_str = AZURE_SQL_PASSWORD # Asignar a la variable del input
+        input_server_azure_str = AZURE_SQL_SERVER
+        input_password_azure_str = AZURE_SQL_PASSWORD
         
         return config.get('puerto', 'COM9'), int(config.get('baudios', 9600))
     except (FileNotFoundError, json.JSONDecodeError, ValueError):
@@ -412,9 +420,11 @@ def guardar_configuracion_serial(puerto, baudios):
         'baudios': int(baudios),
         'idioma': IDIOMA,
         'servicio_datos': SERVICIO_DATOS_ACTUAL,
-        'api_key_thingspeak': input_api_key_thingspeak_str, # Guardar el valor del input
-        'api_key_google_cloud': input_api_key_google_cloud_str, # Guardar el valor del input
-        'password_azure': input_password_azure_str # Guardar la contraseña
+        # Usar .strip() para asegurar que no se guarden espacios en blanco
+        'api_key_thingspeak': input_api_key_thingspeak_str.strip(),
+        'api_key_google_cloud': input_api_key_google_cloud_str.strip(),
+        'servidor_azure': input_server_azure_str.strip(),
+        'password_azure': input_password_azure_str.strip()
     }
     try:
         # Convertir el diccionario a una cadena JSON
@@ -982,34 +992,85 @@ def check_network_connection():
         agregar_a_consola("Sin conexión de red.")
         network_available = False
 
-def worker_enviar_thingspeak(payload):
-    """Esta función se ejecuta en un hilo separado para no bloquear la UI."""
+def guardar_en_buffer_thingspeak(lista_payloads, reason=""):
+    """Guarda una lista de payloads de ThingSpeak en el buffer JSON de forma segura."""
+    with thingspeak_buffer_lock:
+        try:
+            buffer_existente = []
+            if os.path.exists(THINGSPEAK_BUFFER_FILE):
+                with open(THINGSPEAK_BUFFER_FILE, 'r') as f:
+                    contenido = f.read()
+                    if contenido:
+                        buffer_existente = json.loads(contenido)
+            
+            if not isinstance(buffer_existente, list):
+                buffer_existente = []
+
+            buffer_existente.extend(lista_payloads)
+            
+            with open(THINGSPEAK_BUFFER_FILE, 'w') as f:
+                json.dump(buffer_existente, f, indent=4)
+            
+            if reason:
+                msg = f"ThingSpeak: {reason}. Guardando {len(lista_payloads)} regs. en buffer. Total: {len(buffer_existente)}."
+            else:
+                msg = f"ThingSpeak Buffer: Guardados {len(lista_payloads)} regs. en buffer. Total: {len(buffer_existente)}."
+            
+            print(f"[INFO] {msg}")
+            agregar_a_consola(msg)
+
+        except (IOError, json.JSONDecodeError) as e:
+            msg_err = f"ThingSpeak Buffer: ERROR al guardar en buffer: {e}"
+            print(f"[ERROR] {msg_err}")
+            agregar_a_consola(msg_err)
+
+
+def worker_enviar_thingspeak(lista_payloads):
+    """
+    Envía una lista de payloads a ThingSpeak, uno por uno.
+    Si un envío falla, guarda los payloads restantes en el buffer.
+    """
     global network_available
-    try:
-        r = requests.get(THINGSPEAK_URL, params=payload, timeout=10) 
-        if r.status_code == 200: 
-            # El timestamp puede no ser el actual, pero es una buena aproximación.
-            msg_ts = f"ThingSpeak OK (desde hilo)"
-            print(f"[OK] {msg_ts}")
-            agregar_a_consola(msg_ts)
-            network_available = True # Si tiene éxito, la red está disponible
-        else: 
-            msg_ts_err = f"ThingSpeak ERR: {r.status_code} - {r.text}"
-            print(f"[ERROR] {msg_ts_err}")
-            agregar_a_consola(msg_ts_err)
-            # No asumimos pérdida de red por errores de la API, solo por excepciones de conexión
-    except requests.exceptions.RequestException as e: 
-        msg_ts_conn_err = f"ThingSpeak Conn. ERR: {e}"
-        print(f"[ERROR] {msg_ts_conn_err}")
-        agregar_a_consola(f"Sin red: {e}")
-        network_available = False
+    
+    for i, payload in enumerate(lista_payloads):
+        api_key = payload.get('api_key', 'N/A')
+        try:
+            # La API gratuita de ThingSpeak tiene un límite de ~1 envío cada 15 segundos.
+            # Si hay más de un payload en la lista, aplicamos una pausa.
+            if i > 0:
+                time.sleep(15)
+
+            # Para depuración, mostrar la clave que se está usando
+            print(f"DEBUG: Enviando a ThingSpeak con API Key: '{api_key}'")
+            r = requests.get(THINGSPEAK_URL, params=payload, timeout=30)
+            
+            if r.status_code == 200:
+                data_summary = f"P:{payload.get('field1', 'N/A')}, R:{payload.get('field2', 'N/A')}"
+                msg_ts = f"ThingSpeak: OK. Enviado a canal {api_key}. Datos: {data_summary}"
+                print(f"[OK] {msg_ts}")
+                agregar_a_consola(msg_ts)
+                network_available = True
+            else:
+                msg_ts_err = f"ThingSpeak ERR: {r.status_code} - {r.text}"
+                print(f"[ERROR] {msg_ts_err}")
+                # Si falla por un error de la API (e.g. clave incorrecta), guardamos el resto
+                payloads_restantes = lista_payloads[i:]
+                reason = f"Error API {r.status_code}. Canal: {api_key}"
+                guardar_en_buffer_thingspeak(payloads_restantes, reason=reason)
+                return # Salir del bucle y del hilo
+
+        except requests.exceptions.RequestException as e:
+            # Si falla por un problema de conexión, la red no está disponible
+            print(f"[ERROR] ThingSpeak Conn. ERR: {e}")
+            network_available = False
+            # Guardar los payloads restantes (desde el actual hasta el final) en el buffer
+            payloads_restantes = lista_payloads[i:]
+            reason = f"Fallo de conexión. Canal: {api_key}"
+            guardar_en_buffer_thingspeak(payloads_restantes, reason=reason)
+            return # Salir del bucle y del hilo
 
 def enviar_thingspeak():
-    global PROGRAM_MODE
-    if PROGRAM_MODE == "TRIAL_EXPIRED":
-        print("INFO: Modo trial expirado. Envío a ThingSpeak deshabilitado.")
-        return
-
+    # Esta función ahora solo prepara y lanza el hilo con una lista de un solo payload.
     estado_alarma_para_thingspeak = "SIN ALARMA"
     if alarma_roll_babor_activa:
         estado_alarma_para_thingspeak = "ALARMA BABOR"
@@ -1034,12 +1095,12 @@ def enviar_thingspeak():
         'status': f"Sentina1: {switch1_status}, Sentina2: {switch2_status}, Alarma: {estado_alarma_para_thingspeak}"
     }
     
-    # Crear y lanzar el hilo
-    thread = threading.Thread(target=worker_enviar_thingspeak, args=(payload,))
-    thread.daemon = True # El hilo no impedirá que el programa se cierre
+    # Crear y lanzar el hilo, pasando el payload dentro de una lista
+    thread = threading.Thread(target=worker_enviar_thingspeak, args=([payload],))
+    thread.daemon = True
     thread.start()
 
-def guardar_en_buffer_sql(lista_payloads):
+def guardar_en_buffer_sql(lista_payloads, reason=""):
     """Guarda una lista de payloads en el archivo de buffer JSON de forma segura."""
     with sql_buffer_lock:
         try:
@@ -1060,7 +1121,12 @@ def guardar_en_buffer_sql(lista_payloads):
             with open(SQL_BUFFER_FILE, 'w') as f:
                 json.dump(buffer_existente, f, indent=4)
             
-            msg = f"SQL Buffer: Guardados {len(lista_payloads)} registros en buffer. Total: {len(buffer_existente)}."
+            # Construir el mensaje unificado
+            if reason:
+                msg = f"SQL: {reason}. Guardando {len(lista_payloads)} registros en buffer. Total: {len(buffer_existente)}."
+            else:
+                msg = f"SQL Buffer: Guardados {len(lista_payloads)} registros en buffer. Total: {len(buffer_existente)}."
+            
             print(f"[INFO] {msg}")
             agregar_a_consola(msg)
 
@@ -1096,25 +1162,24 @@ def worker_enviar_sql(lista_payloads):
                 break
     
     except Exception as e:
-        msg_sql_err = f"Azure SQL: Error al listar drivers ODBC: {e}"
-        print(f"[ERROR] {msg_sql_err}")
-        agregar_a_consola(msg_sql_err)
+        print(f"[ERROR] Azure SQL: Error al listar drivers ODBC: {e}")
         network_available = False
-        guardar_en_buffer_sql(lista_payloads) # Guardar en buffer si falla la detección de driver
+        guardar_en_buffer_sql(lista_payloads, reason="Error de drivers ODBC")
         return
 
     if not sql_server_driver:
-        msg_sql_err = "Azure SQL: No se encontró un driver ODBC para SQL Server."
-        print(f"[ERROR] {msg_sql_err}")
+        print(f"[ERROR] Azure SQL: No se encontró un driver ODBC para SQL Server.")
         print(f"INFO: Drivers disponibles en el sistema: {available_drivers}")
-        agregar_a_consola(msg_sql_err)
-        agregar_a_consola(f"Drivers: {available_drivers}")
+        agregar_a_consola(f"SQL Drivers: {available_drivers}")
         network_available = False
-        guardar_en_buffer_sql(lista_payloads) # Guardar en buffer si no hay driver
+        guardar_en_buffer_sql(lista_payloads, reason="No se encontró driver ODBC")
         return
     # --- Fin de la detección automática ---
 
     conn = None
+    # Información de conexión para logging (sin contraseña)
+    conn_info_log = f"{AZURE_SQL_USER}@{AZURE_SQL_SERVER}/{AZURE_SQL_DATABASE}"
+    
     try:
         conn_str = (
             f"DRIVER={{{sql_server_driver}}};"
@@ -1122,24 +1187,24 @@ def worker_enviar_sql(lista_payloads):
             f"DATABASE={AZURE_SQL_DATABASE};"
             f"UID={AZURE_SQL_USER};"
             f"PWD={AZURE_SQL_PASSWORD};"
+            f"Encrypt=yes;"
+            f"TrustServerCertificate=no;"
+            f"Connection Timeout=30;" 
         )
-        print(f"INFO: Intentando conectar con el driver detectado: {sql_server_driver}")
+
+        print(f"INFO: Intentando conectar a {conn_info_log} con el driver: {sql_server_driver}")
         conn = pyodbc.connect(conn_str, timeout=10)
-        print(f"✅ Conexión exitosa con el driver: {sql_server_driver}")
+        print(f"✅ Conexión exitosa a {conn_info_log}")
     
     except pyodbc.Error as ex:
-        msg_sql_err = f"Azure SQL: Fallo la conexión con driver '{sql_server_driver}'."
-        print(f"[ERROR] {msg_sql_err} - {ex}")
-        agregar_a_consola(f"Azure SQL: Fallo conexión. Verifique red y contraseña.")
+        print(f"[ERROR] Azure SQL: Fallo la conexión - {ex}")
         network_available = False
-        guardar_en_buffer_sql(lista_payloads) # Guardar en buffer si la conexión falla
+        guardar_en_buffer_sql(lista_payloads, reason=f"Fallo de conexión. Destino: {conn_info_log}")
         return
     except Exception as e:
-        msg_sql_err = f"Azure SQL: Error inesperado al conectar: {e}"
-        print(f"[ERROR] {msg_sql_err}")
-        agregar_a_consola(msg_sql_err)
+        print(f"[ERROR] Azure SQL: Error inesperado al conectar: {e}")
         network_available = False
-        guardar_en_buffer_sql(lista_payloads) # Guardar en buffer por otros errores
+        guardar_en_buffer_sql(lista_payloads, reason=f"Error inesperado de conexión. Destino: {conn_info_log}")
         return
 
     try:
@@ -1160,28 +1225,19 @@ def worker_enviar_sql(lista_payloads):
             cursor.executemany(sql_insert, datos_para_insertar)
             conn.commit()
             
-            msg_sql = f"Azure SQL: Conexión OK. {len(datos_para_insertar)} registros enviados."
+            msg_sql = f"Azure SQL: OK. {len(datos_para_insertar)} registros enviados a {conn_info_log}."
             print(f"[OK] {msg_sql}")
             agregar_a_consola(msg_sql)
             network_available = True
-            
-            # Si el envío fue exitoso, se podría limpiar el buffer aquí si esta función
-            # fuera la única responsable de enviarlo, pero lo haremos en el paso siguiente.
 
     except pyodbc.Error as ex:
         print(f"❌ Error al interactuar con la base de datos: {ex}")
-        msg_sql_err = f"Azure SQL: Error de base de datos - {ex}"
-        print(f"[ERROR] {msg_sql_err}")
-        agregar_a_consola(msg_sql_err)
         network_available = False
-        guardar_en_buffer_sql(lista_payloads) # Guardar en buffer si el INSERT falla
+        guardar_en_buffer_sql(lista_payloads, reason=f"Error de base de datos. Destino: {conn_info_log}")
     except Exception as e:
         print(f"❌ Error inesperado de SQL: {e}")
-        msg_sql_conn_err = f"Azure SQL: Error de conexión - {e}"
-        print(f"[ERROR] {msg_sql_conn_err}")
-        agregar_a_consola(msg_sql_conn_err)
         network_available = False
-        guardar_en_buffer_sql(lista_payloads) # Guardar en buffer por otros errores
+        guardar_en_buffer_sql(lista_payloads, reason=f"Error inesperado de SQL. Destino: {conn_info_log}")
     finally:
         if conn:
             conn.close()
@@ -1223,6 +1279,41 @@ def reenviar_buffer_sql_si_necesario():
             agregar_a_consola(msg_err)
 
 
+def reenviar_buffer_thingspeak_si_necesario():
+    """
+    Comprueba si hay datos en el buffer de ThingSpeak y, si hay conexión,
+    intenta reenviarlos en un hilo separado.
+    """
+    if not network_available or not os.path.exists(THINGSPEAK_BUFFER_FILE) or os.path.getsize(THINGSPEAK_BUFFER_FILE) == 0:
+        return
+
+    with thingspeak_buffer_lock:
+        try:
+            with open(THINGSPEAK_BUFFER_FILE, 'r') as f:
+                buffer_a_enviar = json.load(f)
+            
+            if not buffer_a_enviar or not isinstance(buffer_a_enviar, list):
+                return
+
+            # Vaciar el archivo de buffer ANTES de intentar enviar.
+            with open(THINGSPEAK_BUFFER_FILE, 'w') as f:
+                json.dump([], f)
+
+            msg = f"ThingSpeak Buffer: Reenviando {len(buffer_a_enviar)} registros."
+            print(f"[INFO] {msg}")
+            agregar_a_consola(msg)
+
+            # Iniciar el worker en un hilo
+            thread = threading.Thread(target=worker_enviar_thingspeak, args=(buffer_a_enviar,))
+            thread.daemon = True
+            thread.start()
+
+        except (IOError, json.JSONDecodeError) as e:
+            msg_err = f"ThingSpeak Buffer: ERROR al procesar el buffer para reenvío: {e}"
+            print(f"[ERROR] {msg_err}")
+            agregar_a_consola(msg_err)
+
+
 def enviar_y_guardar_datos_periodicamente():
     """Guarda en CSV y envía a servicios en la nube a intervalos regulares."""
     global ultima_vez_envio_datos
@@ -1230,11 +1321,11 @@ def enviar_y_guardar_datos_periodicamente():
     if time.time() - ultima_vez_envio_datos < INTERVALO_ENVIO_DATOS_S:
         return
 
-    # --- 1. Reenviar datos del buffer si es necesario ---
-    # Esta función se ejecutará primero y, si hay datos en el buffer y red,
-    # iniciará un hilo para enviarlos.
-    if SERVICIO_DATOS_ACTUAL == "azure_sql":
-        reenviar_buffer_sql_si_necesario()
+    # --- 1. Reenviar datos de AMBOS buffers si es necesario ---
+    # Estas funciones se ejecutarán primero y, si hay datos y red,
+    # iniciarán hilos para enviarlos.
+    reenviar_buffer_sql_si_necesario()
+    reenviar_buffer_thingspeak_si_necesario()
 
     # --- 2. Procesar y enviar datos actuales ---
     # Solo proceder si hay datos válidos del sensor.
@@ -1251,17 +1342,27 @@ def enviar_y_guardar_datos_periodicamente():
         ultima_vez_envio_datos = time.time() # Asegurarse de que el temporizador se reinicie
         return
 
-    # Preparar estado de alarma para logging y envío
-    partes_alarma = []
-    if alarma_roll_babor_activa: partes_alarma.append("B")
-    if alarma_roll_estribor_activa: partes_alarma.append("E")
-    if alarma_pitch_sentado_activa: partes_alarma.append("S")
-    if alarma_pitch_encabuzado_activa: partes_alarma.append("EN")
-    estado_alarma_sql_corto = "+".join(partes_alarma) if partes_alarma else "OK"
+    # Preparar los datos para el log
+    ship_id_log = API_KEY_GOOGLE_CLOUD if API_KEY_GOOGLE_CLOUD else "(no definido)"
+    timestamp_log = ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    # Determinar el destino para el log
+    if SERVICIO_DATOS_ACTUAL == "azure_sql":
+        destino_log = f"{AZURE_SQL_USER}@{AZURE_SQL_SERVER}"
+    elif SERVICIO_DATOS_ACTUAL == "thingspeak":
+        destino_log = f"Canal TS: {API_KEY_THINGSPEAK}"
+    else:
+        destino_log = "Servicio no definido"
+
+    log_msg = (
+        f"Destino: {destino_log}, ID:{ship_id_log}, Date:{timestamp_log}, P:{ts_pitch_float:.1f}, R:{ts_roll_float:.1f}, "
+        f"Lat:{ts_lat_decimal}, Lon:{ts_lon_decimal}, Spd:{ts_speed_float}, Hdg:{ts_heading_float}, "
+        f"ROT:{rot_float:.1f}, S1:{switch1_status}, S2:{switch2_status}"
+    )
 
     print(f"--- Guardando y Enviando Datos ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---")
-    print(f"ID:{API_KEY_GOOGLE_CLOUD}, P:{ts_pitch_float}, R:{ts_roll_float}, Lat:{ts_lat_decimal}, Lon:{ts_lon_decimal}, Spd:{ts_speed_float}, Hdg:{ts_heading_float}, Alt:{ts_altitude_float}, ROT:{rot_float}, S1:{switch1_status}, S2:{switch2_status}, Alarma:{estado_alarma_sql_corto}")
-    agregar_a_consola(f"ID:{API_KEY_GOOGLE_CLOUD}, P:{ts_pitch_float:.1f}, R:{ts_roll_float:.1f}, ROT:{rot_float:.1f}, S1:{switch1_status}, S2:{switch2_status}, Alarma:{estado_alarma_sql_corto}")
+    print(log_msg)
+    agregar_a_consola(log_msg)
 
     # Guardar en CSV
     guardar_csv()
@@ -1373,7 +1474,7 @@ def main():
     global datos_consola_buffer, MAX_LINEAS_CONSOLA, simulador_activado, sim_data_index
     global alarma_roll_babor_activa, alarma_roll_estribor_activa, alarma_pitch_sentado_activa, alarma_pitch_encabuzado_activa
     global ser, serial_port_available, ultima_vez_datos_recibidos, nmea_data_stale
-    global SERVICIO_DATOS_ACTUAL, API_KEY_THINGSPEAK, API_KEY_GOOGLE_CLOUD, input_api_key_thingspeak_str, input_api_key_google_cloud_str, input_password_azure_str
+    global SERVICIO_DATOS_ACTUAL, API_KEY_THINGSPEAK, API_KEY_GOOGLE_CLOUD, input_api_key_thingspeak_str, input_api_key_google_cloud_str, input_server_azure_str, input_password_azure_str
     global mostrar_ventana_config_serial, mostrar_ventana_alarma, mostrar_ventana_idioma, mostrar_ventana_acerca_de
     global mostrar_ventana_servicio_datos, mostrar_ventana_password_servicio, mostrar_ventana_consola_datos, mostrar_ventana_test_serial
     global datos_test_serial_buffer
@@ -1591,7 +1692,7 @@ def main():
     # Variables para la ventana de servicio de datos
     mostrar_ventana_servicio_datos = False
     ventana_servicio_width = 400
-    ventana_servicio_height = 370 # Aumentada para el campo de contraseña
+    ventana_servicio_height = 420 # Aumentada para el nuevo campo de servidor
     ventana_servicio_x = (dimensiones[0] - ventana_servicio_width) // 2
     ventana_servicio_y = (dimensiones[1] - ventana_servicio_height) // 2
     rect_ventana_servicio_datos = pygame.Rect(ventana_servicio_x, ventana_servicio_y, ventana_servicio_width, ventana_servicio_height)
@@ -1789,12 +1890,15 @@ def main():
                             input_servicio_activo = "thingspeak"
                         elif globals().get('rect_input_apikey_google_cloud') and globals().get('rect_input_apikey_google_cloud').collidepoint(evento.pos):
                             input_servicio_activo = "google_cloud"
+                        elif globals().get('rect_input_servidor_azure') and globals().get('rect_input_servidor_azure').collidepoint(evento.pos):
+                            input_servicio_activo = "servidor_azure"
                         elif globals().get('rect_input_password_azure') and globals().get('rect_input_password_azure').collidepoint(evento.pos):
                             input_servicio_activo = "password_azure"
                         elif globals().get('rect_boton_guardar_servicio') and globals().get('rect_boton_guardar_servicio').collidepoint(evento.pos):
                             # Guardar los valores de los inputs en las variables globales principales
                             API_KEY_THINGSPEAK = input_api_key_thingspeak_str
                             API_KEY_GOOGLE_CLOUD = input_api_key_google_cloud_str
+                            AZURE_SQL_SERVER = input_server_azure_str
                             guardar_configuracion_serial(puerto, baudios) # Guarda todas las configs incluido el servicio y keys
                             mostrar_ventana_servicio_datos = False
                             input_servicio_activo = None
@@ -2061,6 +2165,8 @@ def main():
                             input_api_key_thingspeak_str = input_api_key_thingspeak_str[:-1]
                         elif input_servicio_activo == "google_cloud":
                             input_api_key_google_cloud_str = input_api_key_google_cloud_str[:-1]
+                        elif input_servicio_activo == "servidor_azure":
+                            input_server_azure_str = input_server_azure_str[:-1]
                         elif input_servicio_activo == "password_azure":
                             input_password_azure_str = input_password_azure_str[:-1]
                     elif evento.unicode.isprintable(): # Aceptar cualquier caracter imprimible para API keys
@@ -2070,6 +2176,9 @@ def main():
                         elif input_servicio_activo == "google_cloud":
                             if len(input_api_key_google_cloud_str) < 200: # Limitar longitud (Google keys pueden ser largas)
                                 input_api_key_google_cloud_str += evento.unicode
+                        elif input_servicio_activo == "servidor_azure":
+                            if len(input_server_azure_str) < 200:
+                                input_server_azure_str += evento.unicode
                         elif input_servicio_activo == "password_azure":
                             if len(input_password_azure_str) < 100:
                                 input_password_azure_str += evento.unicode
@@ -2085,6 +2194,10 @@ def main():
                                     input_api_key_google_cloud_str += pasted_text
                                     if len(input_api_key_google_cloud_str) > 200:
                                         input_api_key_google_cloud_str = input_api_key_google_cloud_str[:200]
+                                elif input_servicio_activo == "servidor_azure":
+                                    input_server_azure_str += pasted_text
+                                    if len(input_server_azure_str) > 200:
+                                        input_server_azure_str = input_server_azure_str[:200]
                                 elif input_servicio_activo == "password_azure":
                                     input_password_azure_str += pasted_text
                                     if len(input_password_azure_str) > 100:
@@ -3238,6 +3351,26 @@ def main():
             
             current_y_servicio += label_apikey_gc_surf.get_height() + padding_y_servicio
 
+            # Servidor Azure SQL
+            label_servidor_azure_surf = font.render(TEXTOS[IDIOMA]["etiqueta_servidor_azure"], True, COLOR_TEXTO_NORMAL)
+            screen.blit(label_servidor_azure_surf, (rect_ventana_servicio_datos.left + padding_x_servicio, current_y_servicio))
+
+            rect_input_servidor_azure = pygame.Rect(rect_ventana_servicio_datos.left + padding_x_servicio + label_servidor_azure_surf.get_width() + 5, current_y_servicio -2, input_width_servicio, font.get_height() + 4)
+            globals()['rect_input_servidor_azure'] = rect_input_servidor_azure
+
+            color_fondo_input_srv = pygame.Color('lightskyblue1') if input_servicio_activo == "servidor_azure" else COLOR_INPUT_FONDO
+            pygame.draw.rect(screen, color_fondo_input_srv, rect_input_servidor_azure)
+            pygame.draw.rect(screen, COLOR_INPUT_BORDE, rect_input_servidor_azure, 1)
+            input_srv_surf = font.render(input_server_azure_str, True, COLOR_TEXTO_NORMAL)
+            screen.blit(input_srv_surf, (rect_input_servidor_azure.left + 5, rect_input_servidor_azure.top + 2))
+
+            if input_servicio_activo == "servidor_azure" and cursor_visible:
+                cursor_x = rect_input_servidor_azure.left + 5 + input_srv_surf.get_width()
+                if cursor_x < rect_input_servidor_azure.right - 2:
+                    pygame.draw.line(screen, COLOR_TEXTO_NORMAL, (cursor_x, rect_input_servidor_azure.top + 4), (cursor_x, rect_input_servidor_azure.bottom - 4), 1)
+
+            current_y_servicio += label_servidor_azure_surf.get_height() + padding_y_servicio
+
             # Contraseña Azure SQL
             label_password_azure_surf = font.render(TEXTOS[IDIOMA]["etiqueta_password_azure"], True, COLOR_TEXTO_NORMAL)
             screen.blit(label_password_azure_surf, (rect_ventana_servicio_datos.left + padding_x_servicio, current_y_servicio))
@@ -3314,7 +3447,7 @@ def main():
 def draw_console_window(screen, font_console, buffer_datos, copy_message=None):
     global rect_ventana_consola_datos, rect_boton_cerrar_consola_datos, rect_boton_copiar_consola # Necesario para guardar los rects
 
-    ventana_consola_width = 800 # Aumentado de 600 a 800
+    ventana_consola_width = 1000 # Aumentado de 800 a 1000
     ventana_consola_height = 400
     # Centrar horizontalmente
     ventana_consola_x = (screen.get_width() - ventana_consola_width) // 2
