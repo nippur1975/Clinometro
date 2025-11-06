@@ -1,3 +1,4 @@
+
 # Importamos las bibliotecas necesarias
 import pygame
 import math
@@ -1136,6 +1137,15 @@ def guardar_en_buffer_sql(lista_payloads, reason=""):
             agregar_a_consola(msg_err)
 
 
+def convertir_sentina_a_bit(estado_sentina):
+    """Convierte el estado de la sentina (string) a un valor BIT para SQL."""
+    if estado_sentina == "ON":
+        return 1
+    elif estado_sentina == "OFF":
+        return 0
+    else:
+        return None
+
 def worker_enviar_sql(lista_payloads):
     """
     Envía una lista de registros a Azure SQL usando executemany.
@@ -1218,7 +1228,8 @@ def worker_enviar_sql(lista_payloads):
             datos_para_insertar = [
                 (p['ShipID'], p['Date_event'], p['Pitch'], p['Roll'], p['Latitud'], 
                  p['Longitud'], p['Velocidad'], p['Rumbo'], p['Rot'], 
-                 p['Sentina1'], p['Sentina2'])
+                 convertir_sentina_a_bit(p['Sentina1']), 
+                 convertir_sentina_a_bit(p['Sentina2']))
                 for p in lista_payloads
             ]
             
