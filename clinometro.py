@@ -1,4 +1,3 @@
-
 # Importamos las bibliotecas necesarias
 import pygame
 import math
@@ -316,13 +315,18 @@ try:
         'encabuzado': pygame.mixer.Sound(resource_path("alarma_encabuzado.mp3"))
     }
     
-    # Sonidos en inglés (equivalentes)
-    sonidos_en = {
-        'babor': pygame.mixer.Sound(resource_path("port_alarm.mp3")),
-        'estribor': pygame.mixer.Sound(resource_path("starboard_alarm.mp3")),
-        'sentado': pygame.mixer.Sound(resource_path("stern_alarm.mp3")),
-        'encabuzado': pygame.mixer.Sound(resource_path("head_alarm.mp3"))
-    }
+    # Sonidos en inglés (equivalentes) - Carga opcional
+    sonidos_en = {}
+    try:
+        sonidos_en = {
+            'babor': pygame.mixer.Sound(resource_path("port_alarm.mp3")),
+            'estribor': pygame.mixer.Sound(resource_path("starboard_alarm.mp3")),
+            'sentado': pygame.mixer.Sound(resource_path("stern_alarm.mp3")),
+            'encabuzado': pygame.mixer.Sound(resource_path("head_alarm.mp3"))
+        }
+    except (FileNotFoundError, pygame.error):
+        print("ADVERTENCIA: No se encontraron los archivos de sonido en inglés. La funcionalidad de alarma en inglés estará deshabilitada.")
+        sonidos_en = {'babor': None, 'estribor': None, 'sentado': None, 'encabuzado': None}
     
     # Ajustar volumen de los sonidos
     for sonido in sonidos_es.values():
@@ -3588,4 +3592,5 @@ def draw_test_window(screen, font_test, buffer_datos, copy_message=None):
 # Punto de entrada del programa
 if __name__ == "__main__":
     main()
+
 
