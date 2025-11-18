@@ -909,7 +909,7 @@ def init_csv():
         with open(CSV_FILENAME, 'a', newline='') as f: 
             if not file_exists or is_empty:
                 writer = csv.writer(f)
-                writer.writerow(["ShipID", "Pitch", "Roll", "Latitud", "Longitud", "Velocidad", "Rumbo", "ROT", "Switch1", "Switch2"])
+                writer.writerow(["ShipID", "Date_event", "Pitch", "Roll", "Latitud", "Longitud", "Velocidad", "Rumbo", "ROT", "Switch1", "Switch2"])
                 print(f"DEBUG: init_csv - Cabecera escrita en: {CSV_FILENAME}")
             else:
                 print(f"DEBUG: init_csv - Archivo ya existe y no está vacío: {CSV_FILENAME}")
@@ -964,10 +964,12 @@ def guardar_alarma_csv(timestamp, tipo_alarma, estado_alarma, valor_actual, umbr
 
 def guardar_csv():
     try:
+        timestamp_final = ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         with open(CSV_FILENAME, 'a', newline='') as f: 
             writer = csv.writer(f)
             writer.writerow([
                 API_KEY_GOOGLE_CLOUD, # Nombre del barco
+                timestamp_final,
                 ts_pitch_float, 
                 ts_roll_float, 
                 ts_lat_decimal, 
