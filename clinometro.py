@@ -1,4 +1,5 @@
 # Importamos las bibliotecas necesarias
+import numpy
 import pygame
 import math
 import os
