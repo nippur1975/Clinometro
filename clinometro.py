@@ -1,5 +1,5 @@
 # Importamos las bibliotecas necesarias
-import numpy
+import numpy._core._exceptions
 import pygame
 import math
 import os
