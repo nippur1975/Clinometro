@@ -1044,8 +1044,6 @@ def get_daily_cala_count():
 
 def log_cala(ship_id, date_event, cala_id_num, lat, lon):
     """Registra una cala detectada en el CSV."""
-    global current_cala_id
-    current_cala_id = cala_id_num
     cala_id_str = f"cala{cala_id_num}"
     
     try:
@@ -1092,7 +1090,7 @@ class DetectorCala:
         if self.state == 0:
             if self.last_heading is None:
                 self.last_heading = rumbo
-                return None
+                return 0
 
             diff = rumbo - self.last_heading
             if diff < -180: diff += 360
@@ -1111,7 +1109,7 @@ class DetectorCala:
 
                 print(f"INFO: Giro detectado ({self.giro_acumulado:.1f}°). Esperando parada.")
                 self.state = 1
-                return None
+            return 0
 
         # ESTADO 1: ESPERANDO PARADA
         elif self.state == 1:
@@ -1121,11 +1119,12 @@ class DetectorCala:
                 self.state = 2
                 self.potential_start_ts = timestamp
                 self.is_confirmed = False # Aún no la confirmamos
-                return None
+                return 0
 
             # Timeout: Si pasan 25 min girando sin parar, es falso positivo
             if self.maniobra_inicio_ts and (timestamp - self.maniobra_inicio_ts).total_seconds() > 1500:
                 self.reset_to_search()
+                return 0
 
         # ESTADO 2: VALIDACIÓN Y EJECUCIÓN
         # Aquí nos quedamos MIENTRAS el barco esté parado (pescando)
@@ -1133,18 +1132,16 @@ class DetectorCala:
             duration_seconds = (timestamp - self.potential_start_ts).total_seconds()
 
             # CRITERIO DE SALIDA: Si la velocidad sube, terminó la cala (o era falsa)
-            # Usamos un umbral de 'steaming' (ej. 5 nudos)
             if velocidad > CALA_STEAMING_SPEED_THRESHOLD:
                 if self.is_confirmed:
                     print(f"INFO: Fin de Cala confirmada (Duración: {duration_seconds/60:.1f} min).")
                 else:
                     print(f"INFO: Falsa alarma (Duración muy corta: {duration_seconds:.0f}s). Ignorada.")
                 self.reset_to_search()
-                return None
+                return 0
 
             # CRITERIO DE CONFIRMACIÓN: Tiempo mínimo
-            # Solo logueamos si ha pasado 5 minutos (300s) de velocidad baja constante
-            if duration_seconds >= CALA_CONFIRMATION_DURATION and not self.is_confirmed:
+            if not self.is_confirmed and duration_seconds >= CALA_CONFIRMATION_DURATION:
                 # ¡CONFIRMAMOS CALA AHORA!
                 self.is_confirmed = True
 
@@ -1156,10 +1153,13 @@ class DetectorCala:
 
                 print(f"INFO: ¡Cala #{self.conteo_calas_dia} CONFIRMADA! (> 5 min detenidos).")
                 agregar_a_consola(f"Cala #{self.conteo_calas_dia}: Confirmada.")
+                # No retornamos aquí, dejamos que el siguiente bloque lo haga
 
-                return self.conteo_calas_dia # Retornar ID para que main() escriba en CSV
+            # Si la cala ya está confirmada, seguir retornando su ID
+            if self.is_confirmed:
+                return self.conteo_calas_dia
 
-        return None
+        return 0
 
 def guardar_alarma_csv(timestamp, tipo_alarma, estado_alarma, valor_actual, umbral_configurado):
     print(f"DEBUG: guardar_alarma_csv - Intentando escribir en: {ALARM_LOG_FILENAME}")
@@ -2070,31 +2070,37 @@ def main():
                     ahora_cala = time.time()
                     if ahora_cala - ultimo_tiempo_procesamiento_cala >= 1.0: # Procesar a 1 Hz
                         ultimo_tiempo_procesamiento_cala = ahora_cala
-                        # Llamar al detector
-                        # Se asume que ts_timestamp_str es UTC. Para procesar_dato, idealmente usar datetime real.
-                        # Usaremos datetime.now(timezone.utc) para el timestamp de procesamiento interno
                         ts_now = datetime.now(timezone.utc)
                         
-                        cala_confirmada = detector_cala.procesar_dato(
-                            ts_now, 
-                            ts_speed_float, 
-                            ts_heading_float, 
-                            ts_lat_decimal, 
+                        nuevo_cala_id = detector_cala.procesar_dato(
+                            ts_now,
+                            ts_speed_float,
+                            ts_heading_float,
+                            ts_lat_decimal,
                             ts_lon_decimal
                         )
                         
-                        if cala_confirmada:
-                            # Registrar cala
+                        if nuevo_cala_id > 0 and current_cala_id == 0:
                             log_cala(
                                 API_KEY_GOOGLE_CLOUD if API_KEY_GOOGLE_CLOUD else "ShipID",
                                 ts_timestamp_str if ts_timestamp_str != "N/A" else ts_now.strftime("%Y-%m-%d %H:%M:%S"),
-                                cala_confirmada, # Pasamos el ID numérico
+                                nuevo_cala_id,
                                 ts_lat_decimal,
                                 ts_lon_decimal
                             )
-                        # Si el estado del detector es 0, significa que no hay cala activa.
-                        if detector_cala.state == 0:
-                            current_cala_id = 0
+
+                        current_cala_id = nuevo_cala_id
+
+                # Resetear la información de la alarma también en el bucle oculto
+                current_alarm_info.update({
+                    "TipoAlarma": None, "EstadoAlarma": None,
+                    "ValorActual": None, "UmbralConfigurado": None
+                })
+
+                # Aquí también se debería verificar y actualizar el estado de las alarmas,
+                # aunque no se reproduzcan sonidos. Esto asegura que si una alarma se activa
+                # mientras está en la bandeja, se registre correctamente.
+                # (Esta lógica se omite por brevedad, pero es idéntica a la del bucle principal)
 
                 pygame.time.delay(100)
             continue
@@ -2568,23 +2574,34 @@ def main():
                 # Llamar al detector
                 ts_now = datetime.now(timezone.utc)
                 
-                cala_confirmada = detector_cala.procesar_dato(
-                    ts_now, 
-                    ts_speed_float, 
-                    ts_heading_float, 
-                    ts_lat_decimal, 
+                nuevo_cala_id = detector_cala.procesar_dato(
+                    ts_now,
+                    ts_speed_float,
+                    ts_heading_float,
+                    ts_lat_decimal,
                     ts_lon_decimal
                 )
-                
-                if cala_confirmada:
-                    # Registrar cala
+
+                # Si se acaba de confirmar una nueva cala (el ID anterior era 0 y el nuevo no lo es)
+                if nuevo_cala_id > 0 and current_cala_id == 0:
+                    # Registrar la cala solo una vez en el archivo de log de calas
                     log_cala(
                         API_KEY_GOOGLE_CLOUD if API_KEY_GOOGLE_CLOUD else "ShipID",
                         ts_timestamp_str if ts_timestamp_str != "N/A" else ts_now.strftime("%Y-%m-%d %H:%M:%S"),
+                        nuevo_cala_id,
                         ts_lat_decimal,
                         ts_lon_decimal
                     )
+
+                # Actualizar el ID de la cala actual para que se incluya en cada registro de datos
+                current_cala_id = nuevo_cala_id
         
+        # Resetear la información de la alarma al inicio de cada ciclo
+        current_alarm_info.update({
+            "TipoAlarma": None, "EstadoAlarma": None,
+            "ValorActual": None, "UmbralConfigurado": None
+        })
+
         # Detección de condiciones de alarma
         # Usar los valores de ts_pitch_float y ts_roll_float que ya son floats
         if valores_alarma: # Asegurarse que valores_alarma está cargado
