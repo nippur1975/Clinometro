@@ -17,6 +17,7 @@ import time
 import sys # Necesario para sys._MEIPASS
 import pyodbc
 import base64
+import re
 
 try:
     import pyperclip
@@ -235,6 +236,8 @@ CALA_MANIOBRA_MAX_DURATION = 1200.0 # 20 min
 
 CALA_STOP_SPEED_THRESHOLD = 2.0     # Subido a 2.0 para detectar la parada antes
 CALA_VALIDATION_DURATION = 600.0    # 10 minutos de validación
+CALA_STEAMING_SPEED_THRESHOLD = 5.0
+CALA_CONFIRMATION_DURATION = 300.0
 
 # Criterios de Validación (Huella Digital RELAJADA para mar real)
 CALA_VAL_MAX_SPEED = 1.8            # Subido a 1.8 (tolera picos por oleaje)
@@ -992,38 +995,42 @@ def init_calas_log():
         print(f"[ERROR] Error inicializando {CALAS_LOG_FILENAME}: {e}")
 
 def get_daily_cala_count():
-    """Lee el archivo de logs y cuenta cuántas calas hay para la fecha actual."""
+    """Cuenta calas del día de forma robusta, incluso si el CSV no tiene cabecera."""
     global daily_cala_count, last_cala_date
     current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    
-    # Si la fecha en memoria es diferente a hoy, reiniciar contador
+
+    # Reset diario
     if last_cala_date != current_date:
         daily_cala_count = 0
         last_cala_date = current_date
-    
-    try:
-        if not os.path.exists(CALAS_LOG_FILENAME):
-            return 0
-            
-        count = 0
-        with open(CALAS_LOG_FILENAME, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if row['Date_event'].startswith(current_date):
-                    # Intentar extraer el número de cala si el formato es cala1, cala2...
-                    try:
-                        cala_val = row['CalaID'].replace('cala', '')
-                        if cala_val.isdigit():
-                            num = int(cala_val)
-                            if num > count:
-                                count = num
-                    except:
-                        pass
-        daily_cala_count = count
-        return count
-    except Exception as e:
-        print(f"[ERROR] Error leyendo conteo de calas: {e}")
+
+    if not os.path.exists(CALAS_LOG_FILENAME):
         return 0
+
+    try:
+        max_count = 0
+        with open(CALAS_LOG_FILENAME, 'r') as f:
+            reader = csv.reader(f) # Usar reader normal, no DictReader
+            for row in reader:
+                # Formato esperado aprox: ID, Fecha, CalaID, Lat, Lon
+                if len(row) < 3: continue
+
+                fecha_row = row[1] # Asumiendo columna 2 es fecha
+                cala_id_str = row[2] # Asumiendo columna 3 es calaX
+
+                if current_date in fecha_row:
+                    # Extraer número de "cala1", "cala02", etc.
+                    match = re.search(r'cala(\d+)', cala_id_str)
+                    if match:
+                        num = int(match.group(1))
+                        if num > max_count:
+                            max_count = num
+
+        daily_cala_count = max_count
+        return max_count
+    except Exception as e:
+        print(f"[WARN] Error leyendo conteo (usando memoria): {e}")
+        return daily_cala_count
 
 def log_cala(ship_id, date_event, lat, lon):
     """Registra una cala detectada en el CSV."""
@@ -1042,20 +1049,25 @@ def log_cala(ship_id, date_event, lat, lon):
 
 class DetectorCala:
     def __init__(self):
-        self.state = 0 
-        self.maniobra_inicio_ts = None
-        self.giro_acumulado = 0.0
-        self.last_heading = None
-        self.datos_validacion = []
-        self.conteo_calas_dia = 0
-        self.fecha_actual = datetime.now(timezone.utc).date()
-
-    def reset_to_search(self):
         self.state = 0
         self.maniobra_inicio_ts = None
         self.giro_acumulado = 0.0
         self.last_heading = None
-        self.datos_validacion = []
+        self.conteo_calas_dia = 0
+        self.fecha_actual = datetime.now(timezone.utc).date()
+
+        # Variables nuevas para la lógica mejorada
+        self.potential_start_ts = None
+        self.is_confirmed = False # Para saber si ya logueamos esta cala
+
+    def reset_to_search(self):
+        self.state = 0 
+        self.maniobra_inicio_ts = None
+        self.giro_acumulado = 0.0
+        self.last_heading = None
+        self.potential_start_ts = None
+        self.is_confirmed = False
+        print("INFO: Detector reseteado a BÚSQUEDA.")
 
     def procesar_dato(self, timestamp, velocidad, rumbo, lat, lon):
         # Reset diario
@@ -1064,110 +1076,80 @@ class DetectorCala:
             self.conteo_calas_dia = 0
             self.fecha_actual = hoy
 
-        # --- MÁQUINA DE ESTADOS ---
+        # MÁQUINA DE ESTADOS MEJORADA
 
-        # ESTADO 0: ACUMULANDO GIRO
+        # ESTADO 0: BÚSQUEDA (Acumular Giro)
         if self.state == 0:
-            # Inicializar si es el primer dato
             if self.last_heading is None:
                 self.last_heading = rumbo
                 return None
 
-            # Calcular delta rumbo (normalizado -180 a 180)
             diff = rumbo - self.last_heading
             if diff < -180: diff += 360
             if diff > 180: diff -= 360
-            
-            # Solo acumulamos giro si hay algo de movimiento (> 1 nudo) para evitar ruido estático
+
+            # Acumular solo si hay movimiento mínimo para evitar ruido de GPS parado
             if velocidad > 1.0:
                 self.giro_acumulado += diff
-            
+
             self.last_heading = rumbo
 
-            # LÓGICA DE ACTIVACIÓN
-            # Si ya giramos lo suficiente (> 270 grados absolutos)
+            # Si giró suficiente (> 270°), pasamos a esperar la parada
             if abs(self.giro_acumulado) >= CALA_MANIOBRA_MIN_TURN_DEG:
                 if self.maniobra_inicio_ts is None:
                     self.maniobra_inicio_ts = timestamp
-                
-                print(f"INFO: Giro detectado ({self.giro_acumulado:.1f}°). Pasando a espera de parada.")
-                self.state = 1 # Pasamos a esperar que baje la velocidad
+
+                print(f"INFO: Giro detectado ({self.giro_acumulado:.1f}°). Esperando parada.")
+                self.state = 1
                 return None
 
-            # TIMEOUT / RESET
-            # Si llevamos mucho tiempo acumulando sin éxito o condiciones anómalas, resetear.
-            # (Opcional: implementar un timeout de tiempo aquí si se desea)
-
-        # ESTADO 1: ESPERANDO PARADA (Transición de velocidad)
+        # ESTADO 1: ESPERANDO PARADA
         elif self.state == 1:
-            # Si la velocidad baja del umbral de parada, CONFIRMAMOS LA CALA
+            # Si la velocidad baja, entramos en "Posible Cala" (Validación)
             if velocidad < CALA_STOP_SPEED_THRESHOLD:
+                print(f"INFO: Velocidad baja detectada ({velocidad} kn). Iniciando validación de tiempo...")
+                self.state = 2
+                self.potential_start_ts = timestamp
+                self.is_confirmed = False # Aún no la confirmamos
+                return None
+
+            # Timeout: Si pasan 25 min girando sin parar, es falso positivo
+            if self.maniobra_inicio_ts and (timestamp - self.maniobra_inicio_ts).total_seconds() > 1500:
+                self.reset_to_search()
+
+        # ESTADO 2: VALIDACIÓN Y EJECUCIÓN
+        # Aquí nos quedamos MIENTRAS el barco esté parado (pescando)
+        elif self.state == 2:
+            duration_seconds = (timestamp - self.potential_start_ts).total_seconds()
+
+            # CRITERIO DE SALIDA: Si la velocidad sube, terminó la cala (o era falsa)
+            # Usamos un umbral de 'steaming' (ej. 5 nudos)
+            if velocidad > CALA_STEAMING_SPEED_THRESHOLD:
+                if self.is_confirmed:
+                    print(f"INFO: Fin de Cala confirmada (Duración: {duration_seconds/60:.1f} min).")
+                else:
+                    print(f"INFO: Falsa alarma (Duración muy corta: {duration_seconds:.0f}s). Ignorada.")
+                self.reset_to_search()
+                return None
+
+            # CRITERIO DE CONFIRMACIÓN: Tiempo mínimo
+            # Solo logueamos si ha pasado 5 minutos (300s) de velocidad baja constante
+            if duration_seconds >= CALA_CONFIRMATION_DURATION and not self.is_confirmed:
+                # ¡CONFIRMAMOS CALA AHORA!
+                self.is_confirmed = True
+
                 # Sincronizar conteo
                 conteo_archivo = get_daily_cala_count()
                 if conteo_archivo > self.conteo_calas_dia:
                     self.conteo_calas_dia = conteo_archivo
-                
                 self.conteo_calas_dia += 1
-                print(f"INFO: Cala #{self.conteo_calas_dia} DETECTADA (Giro + Parada).")
-                agregar_a_consola(f"Cala #{self.conteo_calas_dia}: Iniciada.")
-                
-                self.state = 2
-                self.validacion_inicio_ts = timestamp
-                self.datos_validacion = []
-                return self.conteo_calas_dia # Retornar ID para loguear
 
-            # Timeout de espera de parada:
-            # Si detectó el giro, pero pasaron 30 minutos y sigue navegando rápido, fue una falsa alarma (vuelta en U)
-            if self.maniobra_inicio_ts and (timestamp - self.maniobra_inicio_ts).total_seconds() > 1500:
-                print("INFO: Giro detectado pero no paró. Reset.")
-                self.reset_to_search()
+                print(f"INFO: ¡Cala #{self.conteo_calas_dia} CONFIRMADA! (> 5 min detenidos).")
+                agregar_a_consola(f"Cala #{self.conteo_calas_dia}: Confirmada.")
 
-        # ESTADO 2: VALIDANDO (Igual que antes)
-        elif self.state == 2:
-            self.datos_validacion.append({'v': velocidad, 'lat': lat, 'lon': lon})
-            elapsed = (timestamp - self.validacion_inicio_ts).total_seconds()
-            
-            # Si durante la validación la velocidad sube mucho, se cancela/termina la cala
-            if velocidad > 5.0: 
-                print("INFO: Velocidad aumentó, fin de validación/cala.")
-                self.reset_to_search()
-                return None
+                return self.conteo_calas_dia # Retornar ID para que main() escriba en CSV
 
-            if elapsed >= CALA_VALIDATION_DURATION:
-                # Fin del tiempo de validación
-                self.reset_to_search()
-                return None
-                    
         return None
-
-    def _validar_huella_digital(self):
-        """Analiza si la cala parece real basándose en deriva y velocidad promedio (opcional)"""
-        if not self.datos_validacion: return False
-        velocidades = [d['v'] for d in self.datos_validacion]
-        max_v = max(velocidades)
-        avg_v = sum(velocidades) / len(velocidades)
-        
-        # Cálculo simple de distancia (deriva) entre inicio y fin
-        p_start = self.datos_validacion[0]
-        p_end = self.datos_validacion[-1]
-        drift = self._haversine(p_start['lon'], p_start['lat'], p_end['lon'], p_end['lat'])
-        
-        msg = f"Validación: MaxVel={max_v:.1f}kn, AvgVel={avg_v:.2f}kn, Deriva={drift:.0f}m"
-        print(msg)
-        return True # Por ahora siempre retornamos True para no borrar el log
-
-    def _haversine(self, lon1, lat1, lon2, lat2):
-        """Calcula distancia en metros entre dos coordenadas"""
-        try:
-            R = 6371000
-            phi1, phi2 = math.radians(lat1), math.radians(lat2)
-            dphi = math.radians(lat2 - lat1)
-            dlambda = math.radians(lon2 - lon1)
-            a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
-            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-            return R * c
-        except:
-            return 0.0
 
 def guardar_alarma_csv(timestamp, tipo_alarma, estado_alarma, valor_actual, umbral_configurado):
     print(f"DEBUG: guardar_alarma_csv - Intentando escribir en: {ALARM_LOG_FILENAME}")
