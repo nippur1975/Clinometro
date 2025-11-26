@@ -9,6 +9,7 @@ from pygame.locals import *
 import requests
 import csv
 from datetime import datetime, timedelta, timezone
+from collections import deque
 import threading
 from PIL import Image
 import pystray
@@ -224,8 +225,26 @@ ARCHIVO_CONFIG_ALARMA = get_persistent_data_path("config_alarma.json") # MODIFIC
 FIRST_RUN_FILE = get_persistent_data_path("first_run.json")
 SQL_BUFFER_FILE = get_persistent_data_path("sql_buffer.json")
 THINGSPEAK_BUFFER_FILE = get_persistent_data_path("thingspeak_buffer.json")
+CALAS_LOG_FILENAME = get_persistent_data_path("calas_log.csv")
+
+# Constantes para detección de calas (AJUSTADAS)
+CALA_MANIOBRA_MIN_SPEED = 8.0       # Bajado a 8.0 para no perder el giro si reduce un poco
+CALA_MANIOBRA_MIN_TURN_DEG = 270.0
+CALA_MANIOBRA_MIN_DURATION = 300.0  # 5 min
+CALA_MANIOBRA_MAX_DURATION = 1200.0 # 20 min
+
+CALA_STOP_SPEED_THRESHOLD = 2.0     # Subido a 2.0 para detectar la parada antes
+CALA_VALIDATION_DURATION = 600.0    # 10 minutos de validación
+
+# Criterios de Validación (Huella Digital RELAJADA para mar real)
+CALA_VAL_MAX_SPEED = 1.8            # Subido a 1.8 (tolera picos por oleaje)
+CALA_VAL_AVG_SPEED_MIN = 0.1        # Bajado a 0.1 (a veces quedan muy quietos)
+CALA_VAL_AVG_SPEED_MAX = 1.0        # Subido a 1.0 (para aceptar el promedio de 0.69 del log)
+CALA_VAL_DRIFT_MAX_M = 400.0        # Subido a 400m (más margen de deriva)
 
 # Variables globales
+daily_cala_count = 0
+last_cala_date = ""
 network_available = True
 last_network_check_time = 0
 valores_alarma = {
@@ -855,6 +874,8 @@ def reset_ui_data():
     global alarma_pitch_sentado_activa, alarma_pitch_encabuzado_activa
     global ultima_reproduccion_alarma_babor_tiempo, ultima_reproduccion_alarma_estribor_tiempo
     global ultima_reproduccion_alarma_sentado_tiempo, ultima_reproduccion_alarma_encabuzado_tiempo
+    global tiempo_inicio_condicion_roll_babor, tiempo_inicio_condicion_roll_estribor
+    global tiempo_inicio_condicion_pitch_sentado, tiempo_inicio_condicion_pitch_encabuzado
     global sonido_alarma_actualmente_reproduciendo, INDICE_PROXIMA_ALARMA_A_SONAR
 
     latitude_str = "N/A"
@@ -891,6 +912,12 @@ def reset_ui_data():
     ultima_reproduccion_alarma_estribor_tiempo = 0.0
     ultima_reproduccion_alarma_sentado_tiempo = 0.0
     ultima_reproduccion_alarma_encabuzado_tiempo = 0.0
+
+    # Resetear temporizadores de condición de alarma (persistencia)
+    tiempo_inicio_condicion_roll_babor = 0.0
+    tiempo_inicio_condicion_roll_estribor = 0.0
+    tiempo_inicio_condicion_pitch_sentado = 0.0
+    tiempo_inicio_condicion_pitch_encabuzado = 0.0
 
     # Detener sonido de alarma actual y resetear gestor de sonido
     if sonido_alarma_actualmente_reproduciendo is not None:
@@ -937,7 +964,7 @@ def init_alarm_csv():
         with open(ALARM_LOG_FILENAME, 'a', newline='') as f:
             if not file_exists_before_open or is_empty:
                 writer = csv.writer(f)
-                writer.writerow(["TimestampUTC", "TipoAlarma", "EstadoAlarma", "ValorActual", "UmbralConfigurado"])
+                writer.writerow(["ShipID", "Date_event", "Latitud", "Longitud", "TipoAlarma", "EstadoAlarma", "ValorActual", "UmbralConfigurado"])
                 print(f"DEBUG: init_alarm_csv - Cabecera escrita en: {ALARM_LOG_FILENAME}")
             else:
                 print(f"DEBUG: init_alarm_csv - Archivo ya existe y no está vacío: {ALARM_LOG_FILENAME}")
@@ -949,14 +976,212 @@ def init_alarm_csv():
     except Exception as e:
         print(f"[ERROR] En init_alarm_csv para {ALARM_LOG_FILENAME}: {e}")
 
+def init_calas_log():
+    """Inicializa el archivo de registro de calas si no existe."""
+    try:
+        file_exists = os.path.exists(CALAS_LOG_FILENAME)
+        is_empty = False
+        if file_exists:
+            is_empty = os.path.getsize(CALAS_LOG_FILENAME) == 0
+        
+        with open(CALAS_LOG_FILENAME, 'a', newline='') as f:
+            if not file_exists or is_empty:
+                writer = csv.writer(f)
+                writer.writerow(["ShipID", "Date_event", "CalaID", "Latitud", "Longitud"])
+    except Exception as e:
+        print(f"[ERROR] Error inicializando {CALAS_LOG_FILENAME}: {e}")
+
+def get_daily_cala_count():
+    """Lee el archivo de logs y cuenta cuántas calas hay para la fecha actual."""
+    global daily_cala_count, last_cala_date
+    current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    
+    # Si la fecha en memoria es diferente a hoy, reiniciar contador
+    if last_cala_date != current_date:
+        daily_cala_count = 0
+        last_cala_date = current_date
+    
+    try:
+        if not os.path.exists(CALAS_LOG_FILENAME):
+            return 0
+            
+        count = 0
+        with open(CALAS_LOG_FILENAME, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row['Date_event'].startswith(current_date):
+                    # Intentar extraer el número de cala si el formato es cala1, cala2...
+                    try:
+                        cala_val = row['CalaID'].replace('cala', '')
+                        if cala_val.isdigit():
+                            num = int(cala_val)
+                            if num > count:
+                                count = num
+                    except:
+                        pass
+        daily_cala_count = count
+        return count
+    except Exception as e:
+        print(f"[ERROR] Error leyendo conteo de calas: {e}")
+        return 0
+
+def log_cala(ship_id, date_event, lat, lon):
+    """Registra una cala detectada en el CSV."""
+    global daily_cala_count
+    daily_cala_count += 1
+    cala_id = f"cala{daily_cala_count}"
+    
+    try:
+        with open(CALAS_LOG_FILENAME, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([ship_id, date_event, cala_id, lat, lon])
+        print(f"INFO: Cala registrada: {cala_id}")
+        agregar_a_consola(f"Cala detectada: {cala_id}")
+    except Exception as e:
+        print(f"[ERROR] Error escribiendo cala en log: {e}")
+
+class DetectorCala:
+    def __init__(self):
+        self.state = 0 
+        self.maniobra_inicio_ts = None
+        self.giro_acumulado = 0.0
+        self.last_heading = None
+        self.datos_validacion = []
+        self.conteo_calas_dia = 0
+        self.fecha_actual = datetime.now(timezone.utc).date()
+
+    def reset_to_search(self):
+        self.state = 0
+        self.maniobra_inicio_ts = None
+        self.giro_acumulado = 0.0
+        self.last_heading = None
+        self.datos_validacion = []
+
+    def procesar_dato(self, timestamp, velocidad, rumbo, lat, lon):
+        # Reset diario
+        hoy = datetime.now(timezone.utc).date()
+        if hoy != self.fecha_actual:
+            self.conteo_calas_dia = 0
+            self.fecha_actual = hoy
+
+        # --- MÁQUINA DE ESTADOS ---
+
+        # ESTADO 0: ACUMULANDO GIRO
+        if self.state == 0:
+            # Inicializar si es el primer dato
+            if self.last_heading is None:
+                self.last_heading = rumbo
+                return None
+
+            # Calcular delta rumbo (normalizado -180 a 180)
+            diff = rumbo - self.last_heading
+            if diff < -180: diff += 360
+            if diff > 180: diff -= 360
+            
+            # Solo acumulamos giro si hay algo de movimiento (> 1 nudo) para evitar ruido estático
+            if velocidad > 1.0:
+                self.giro_acumulado += diff
+            
+            self.last_heading = rumbo
+
+            # LÓGICA DE ACTIVACIÓN
+            # Si ya giramos lo suficiente (> 270 grados absolutos)
+            if abs(self.giro_acumulado) >= CALA_MANIOBRA_MIN_TURN_DEG:
+                if self.maniobra_inicio_ts is None:
+                    self.maniobra_inicio_ts = timestamp
+                
+                print(f"INFO: Giro detectado ({self.giro_acumulado:.1f}°). Pasando a espera de parada.")
+                self.state = 1 # Pasamos a esperar que baje la velocidad
+                return None
+
+            # TIMEOUT / RESET
+            # Si llevamos mucho tiempo acumulando sin éxito o condiciones anómalas, resetear.
+            # (Opcional: implementar un timeout de tiempo aquí si se desea)
+
+        # ESTADO 1: ESPERANDO PARADA (Transición de velocidad)
+        elif self.state == 1:
+            # Si la velocidad baja del umbral de parada, CONFIRMAMOS LA CALA
+            if velocidad < CALA_STOP_SPEED_THRESHOLD:
+                # Sincronizar conteo
+                conteo_archivo = get_daily_cala_count()
+                if conteo_archivo > self.conteo_calas_dia:
+                    self.conteo_calas_dia = conteo_archivo
+                
+                self.conteo_calas_dia += 1
+                print(f"INFO: Cala #{self.conteo_calas_dia} DETECTADA (Giro + Parada).")
+                agregar_a_consola(f"Cala #{self.conteo_calas_dia}: Iniciada.")
+                
+                self.state = 2
+                self.validacion_inicio_ts = timestamp
+                self.datos_validacion = []
+                return self.conteo_calas_dia # Retornar ID para loguear
+
+            # Timeout de espera de parada:
+            # Si detectó el giro, pero pasaron 30 minutos y sigue navegando rápido, fue una falsa alarma (vuelta en U)
+            if self.maniobra_inicio_ts and (timestamp - self.maniobra_inicio_ts).total_seconds() > 1500:
+                print("INFO: Giro detectado pero no paró. Reset.")
+                self.reset_to_search()
+
+        # ESTADO 2: VALIDANDO (Igual que antes)
+        elif self.state == 2:
+            self.datos_validacion.append({'v': velocidad, 'lat': lat, 'lon': lon})
+            elapsed = (timestamp - self.validacion_inicio_ts).total_seconds()
+            
+            # Si durante la validación la velocidad sube mucho, se cancela/termina la cala
+            if velocidad > 5.0: 
+                print("INFO: Velocidad aumentó, fin de validación/cala.")
+                self.reset_to_search()
+                return None
+
+            if elapsed >= CALA_VALIDATION_DURATION:
+                # Fin del tiempo de validación
+                self.reset_to_search()
+                return None
+                    
+        return None
+
+    def _validar_huella_digital(self):
+        """Analiza si la cala parece real basándose en deriva y velocidad promedio (opcional)"""
+        if not self.datos_validacion: return False
+        velocidades = [d['v'] for d in self.datos_validacion]
+        max_v = max(velocidades)
+        avg_v = sum(velocidades) / len(velocidades)
+        
+        # Cálculo simple de distancia (deriva) entre inicio y fin
+        p_start = self.datos_validacion[0]
+        p_end = self.datos_validacion[-1]
+        drift = self._haversine(p_start['lon'], p_start['lat'], p_end['lon'], p_end['lat'])
+        
+        msg = f"Validación: MaxVel={max_v:.1f}kn, AvgVel={avg_v:.2f}kn, Deriva={drift:.0f}m"
+        print(msg)
+        return True # Por ahora siempre retornamos True para no borrar el log
+
+    def _haversine(self, lon1, lat1, lon2, lat2):
+        """Calcula distancia en metros entre dos coordenadas"""
+        try:
+            R = 6371000
+            phi1, phi2 = math.radians(lat1), math.radians(lat2)
+            dphi = math.radians(lat2 - lat1)
+            dlambda = math.radians(lon2 - lon1)
+            a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
+            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+            return R * c
+        except:
+            return 0.0
 
 def guardar_alarma_csv(timestamp, tipo_alarma, estado_alarma, valor_actual, umbral_configurado):
     print(f"DEBUG: guardar_alarma_csv - Intentando escribir en: {ALARM_LOG_FILENAME}")
-    print(f"DEBUG: Datos a guardar: TS={timestamp}, Tipo={tipo_alarma}, Estado={estado_alarma}, Val={valor_actual}, Umbral={umbral_configurado}")
+    
+    # Use globals for location and ship ID
+    ship_id = API_KEY_GOOGLE_CLOUD if API_KEY_GOOGLE_CLOUD else "ShipID"
+    lat = ts_lat_decimal
+    lon = ts_lon_decimal
+    
+    print(f"DEBUG: Datos a guardar: Ship={ship_id}, TS={timestamp}, Lat={lat}, Lon={lon}, Tipo={tipo_alarma}, Estado={estado_alarma}, Val={valor_actual}, Umbral={umbral_configurado}")
     try:
         with open(ALARM_LOG_FILENAME, 'a', newline='') as f: 
             writer = csv.writer(f)
-            writer.writerow([timestamp, tipo_alarma, estado_alarma, valor_actual, umbral_configurado])
+            writer.writerow([ship_id, timestamp, lat, lon, tipo_alarma, estado_alarma, valor_actual, umbral_configurado])
         print(f"DEBUG: guardar_alarma_csv - Escritura exitosa en: {ALARM_LOG_FILENAME}")
     except Exception as e:
         print(f"[ERROR] No se pudo escribir en {ALARM_LOG_FILENAME}: {e}")
@@ -1485,6 +1710,7 @@ def procesar_datos_serie():
 def main():
     global IDIOMA, sonido_alarma_actualmente_reproduciendo, tiempo_ultimo_sonido_iniciado, INDICE_PROXIMA_ALARMA_A_SONAR
     global ultima_reproduccion_alarma_babor_tiempo, ultima_reproduccion_alarma_estribor_tiempo, ultima_reproduccion_alarma_sentado_tiempo, ultima_reproduccion_alarma_encabuzado_tiempo
+    global tiempo_inicio_condicion_roll_babor, tiempo_inicio_condicion_roll_estribor, tiempo_inicio_condicion_pitch_sentado, tiempo_inicio_condicion_pitch_encabuzado
     global ultima_vez_envio_datos, ultimo_intento_reconeccion_tiempo, network_available, last_network_check_time
     global latitude_str, longitude_str, speed_str, heading_str, att_heading_str, att_pitch_str, att_roll_str, altitude_str
     global ts_pitch_float, ts_roll_float, ts_lat_decimal, ts_lon_decimal, ts_speed_float, ts_heading_float, ts_timestamp_str, ts_altitude_float
@@ -1497,7 +1723,8 @@ def main():
     global datos_test_serial_buffer
     global input_puerto_str, input_baudios_idx, puerto_dropdown_activo, baudios_dropdown_activo
     global input_alarma_activo, input_password_str, intento_password_fallido, input_password_activo, input_servicio_activo
-    
+    global running, window_visible
+
     pygame.init() # Asegurar que Pygame esté inicializado
     dimensiones = [1100, 600] # Ancho aumentado para cajas de datos
     screen = pygame.display.set_mode(dimensiones) # Crear la pantalla
@@ -1748,6 +1975,17 @@ def main():
     cursor_visible = True
     cursor_blink_timer = 0
     
+    # Variables para temporizadores de activación de alarma (1 minuto)
+    tiempo_inicio_condicion_roll_babor = 0.0
+    tiempo_inicio_condicion_roll_estribor = 0.0
+    tiempo_inicio_condicion_pitch_sentado = 0.0
+    tiempo_inicio_condicion_pitch_encabuzado = 0.0
+    DURACION_ACTIVACION_ALARMA = 60.0 # segundos
+
+    # Inicializar detector de calas
+    detector_cala = DetectorCala()
+    ultimo_tiempo_procesamiento_cala = 0.0
+
     # Bucle principal
     global running, window_visible
     running = True
@@ -1823,6 +2061,33 @@ def main():
                 # Lógica de envío y guardado de datos
                 enviar_y_guardar_datos_periodicamente()
                 
+                # Lógica de detección de calas (si hay datos NMEA frescos)
+                if not nmea_data_stale:
+                    ahora_cala = time.time()
+                    if ahora_cala - ultimo_tiempo_procesamiento_cala >= 1.0: # Procesar a 1 Hz
+                        ultimo_tiempo_procesamiento_cala = ahora_cala
+                        # Llamar al detector
+                        # Se asume que ts_timestamp_str es UTC. Para procesar_dato, idealmente usar datetime real.
+                        # Usaremos datetime.now(timezone.utc) para el timestamp de procesamiento interno
+                        ts_now = datetime.now(timezone.utc)
+                        
+                        cala_confirmada = detector_cala.procesar_dato(
+                            ts_now, 
+                            ts_speed_float, 
+                            ts_heading_float, 
+                            ts_lat_decimal, 
+                            ts_lon_decimal
+                        )
+                        
+                        if cala_confirmada:
+                            # Registrar cala
+                            log_cala(
+                                API_KEY_GOOGLE_CLOUD if API_KEY_GOOGLE_CLOUD else "ShipID",
+                                ts_timestamp_str if ts_timestamp_str != "N/A" else ts_now.strftime("%Y-%m-%d %H:%M:%S"),
+                                ts_lat_decimal,
+                                ts_lon_decimal
+                            )
+
                 pygame.time.delay(100)
             continue
 
@@ -2286,6 +2551,31 @@ def main():
                 last_network_check_time = now
         
         enviar_y_guardar_datos_periodicamente()
+
+        # Lógica de detección de calas (si hay datos NMEA frescos)
+        if not nmea_data_stale:
+            ahora_cala = time.time()
+            if ahora_cala - ultimo_tiempo_procesamiento_cala >= 1.0: # Procesar a 1 Hz
+                ultimo_tiempo_procesamiento_cala = ahora_cala
+                # Llamar al detector
+                ts_now = datetime.now(timezone.utc)
+                
+                cala_confirmada = detector_cala.procesar_dato(
+                    ts_now, 
+                    ts_speed_float, 
+                    ts_heading_float, 
+                    ts_lat_decimal, 
+                    ts_lon_decimal
+                )
+                
+                if cala_confirmada:
+                    # Registrar cala
+                    log_cala(
+                        API_KEY_GOOGLE_CLOUD if API_KEY_GOOGLE_CLOUD else "ShipID",
+                        ts_timestamp_str if ts_timestamp_str != "N/A" else ts_now.strftime("%Y-%m-%d %H:%M:%S"),
+                        ts_lat_decimal,
+                        ts_lon_decimal
+                    )
         
         # Detección de condiciones de alarma
         # Usar los valores de ts_pitch_float y ts_roll_float que ya son floats
@@ -2296,56 +2586,89 @@ def main():
                 umbral_max_roll_float = float(valores_alarma["max_roll_pos"])
                 
                 # Alarma Roll Babor (ahora activada por valores POSITIVOS)
-                condicion_babor = ts_roll_float > umbral_max_roll_float if att_roll_str != "N/A" else False
-                if condicion_babor and not alarma_roll_babor_activa:
-                    msg_alarma = f"ALARMA ROLL BABOR ACTIVADA. Valor: {ts_roll_float:.1f}°, Umbral: {umbral_max_roll_float:.1f}°"
-                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_BABOR", "ACTIVANDO", ts_roll_float, umbral_max_roll_float)
-                    agregar_a_consola(msg_alarma)
-                elif not condicion_babor and alarma_roll_babor_activa:
-                    msg_alarma = f"ALARMA ROLL BABOR DESACTIVADA. Valor: {ts_roll_float:.1f}°"
-                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_BABOR", "DESACTIVANDO", ts_roll_float, umbral_max_roll_float)
-                    agregar_a_consola(msg_alarma)
-                alarma_roll_babor_activa = condicion_babor
+                condicion_babor_fisica = ts_roll_float > umbral_max_roll_float if att_roll_str != "N/A" else False
+                if condicion_babor_fisica:
+                    if tiempo_inicio_condicion_roll_babor == 0.0:
+                        tiempo_inicio_condicion_roll_babor = time.time()
+                    
+                    # Solo activar si ha pasado el tiempo requerido
+                    if time.time() - tiempo_inicio_condicion_roll_babor >= DURACION_ACTIVACION_ALARMA:
+                        if not alarma_roll_babor_activa:
+                            msg_alarma = f"ALARMA ROLL BABOR ACTIVADA. Valor: {ts_roll_float:.1f}°, Umbral: {umbral_max_roll_float:.1f}°"
+                            guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_BABOR", "ACTIVANDO", ts_roll_float, umbral_max_roll_float)
+                            agregar_a_consola(msg_alarma)
+                            alarma_roll_babor_activa = True
+                else:
+                    tiempo_inicio_condicion_roll_babor = 0.0
+                    if alarma_roll_babor_activa:
+                        msg_alarma = f"ALARMA ROLL BABOR DESACTIVADA. Valor: {ts_roll_float:.1f}°"
+                        guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_BABOR", "DESACTIVANDO", ts_roll_float, umbral_max_roll_float)
+                        agregar_a_consola(msg_alarma)
+                        alarma_roll_babor_activa = False
 
                 # Alarma Roll Estribor (ahora activada por valores NEGATIVOS)
-                condicion_estribor = ts_roll_float < umbral_min_roll_float if att_roll_str != "N/A" else False
-                if condicion_estribor and not alarma_roll_estribor_activa:
-                    msg_alarma = f"ALARMA ROLL ESTRIBOR ACTIVADA. Valor: {ts_roll_float:.1f}°, Umbral: {umbral_min_roll_float:.1f}°"
-                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_ESTRIBOR", "ACTIVANDO", ts_roll_float, umbral_min_roll_float)
-                    agregar_a_consola(msg_alarma)
-                elif not condicion_estribor and alarma_roll_estribor_activa:
-                    msg_alarma = f"ALARMA ROLL ESTRIBOR DESACTIVADA. Valor: {ts_roll_float:.1f}°"
-                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_ESTRIBOR", "DESACTIVANDO", ts_roll_float, umbral_min_roll_float)
-                    agregar_a_consola(msg_alarma)
-                alarma_roll_estribor_activa = condicion_estribor
+                condicion_estribor_fisica = ts_roll_float < umbral_min_roll_float if att_roll_str != "N/A" else False
+                if condicion_estribor_fisica:
+                    if tiempo_inicio_condicion_roll_estribor == 0.0:
+                        tiempo_inicio_condicion_roll_estribor = time.time()
+                    
+                    if time.time() - tiempo_inicio_condicion_roll_estribor >= DURACION_ACTIVACION_ALARMA:
+                        if not alarma_roll_estribor_activa:
+                            msg_alarma = f"ALARMA ROLL ESTRIBOR ACTIVADA. Valor: {ts_roll_float:.1f}°, Umbral: {umbral_min_roll_float:.1f}°"
+                            guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_ESTRIBOR", "ACTIVANDO", ts_roll_float, umbral_min_roll_float)
+                            agregar_a_consola(msg_alarma)
+                            alarma_roll_estribor_activa = True
+                else:
+                    tiempo_inicio_condicion_roll_estribor = 0.0
+                    if alarma_roll_estribor_activa:
+                        msg_alarma = f"ALARMA ROLL ESTRIBOR DESACTIVADA. Valor: {ts_roll_float:.1f}°"
+                        guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_ESTRIBOR", "DESACTIVANDO", ts_roll_float, umbral_min_roll_float)
+                        agregar_a_consola(msg_alarma)
+                        alarma_roll_estribor_activa = False
 
                 # Pitch
                 umbral_min_pitch_float = float(valores_alarma["min_pitch_neg"])
                 umbral_max_pitch_float = float(valores_alarma["max_pitch_pos"])
 
                 # Alarma Pitch Encabuzado
-                condicion_encabuzado = ts_pitch_float < umbral_min_pitch_float if att_pitch_str != "N/A" else False
-                if condicion_encabuzado and not alarma_pitch_encabuzado_activa:
-                    msg_alarma = f"ALARMA PITCH ENCABUZADO ACTIVADA. Valor: {ts_pitch_float:.1f}°, Umbral: {umbral_min_pitch_float:.1f}°"
-                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_ENCABUZADO", "ACTIVANDO", ts_pitch_float, umbral_min_pitch_float)
-                    agregar_a_consola(msg_alarma)
-                elif not condicion_encabuzado and alarma_pitch_encabuzado_activa:
-                    msg_alarma = f"ALARMA PITCH ENCABUZADO DESACTIVADA. Valor: {ts_pitch_float:.1f}°"
-                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_ENCABUZADO", "DESACTIVANDO", ts_pitch_float, umbral_min_pitch_float)
-                    agregar_a_consola(msg_alarma)
-                alarma_pitch_encabuzado_activa = condicion_encabuzado
+                condicion_encabuzado_fisica = ts_pitch_float < umbral_min_pitch_float if att_pitch_str != "N/A" else False
+                if condicion_encabuzado_fisica:
+                    if tiempo_inicio_condicion_pitch_encabuzado == 0.0:
+                        tiempo_inicio_condicion_pitch_encabuzado = time.time()
+                        
+                    if time.time() - tiempo_inicio_condicion_pitch_encabuzado >= DURACION_ACTIVACION_ALARMA:
+                        if not alarma_pitch_encabuzado_activa:
+                            msg_alarma = f"ALARMA PITCH ENCABUZADO ACTIVADA. Valor: {ts_pitch_float:.1f}°, Umbral: {umbral_min_pitch_float:.1f}°"
+                            guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_ENCABUZADO", "ACTIVANDO", ts_pitch_float, umbral_min_pitch_float)
+                            agregar_a_consola(msg_alarma)
+                            alarma_pitch_encabuzado_activa = True
+                else:
+                    tiempo_inicio_condicion_pitch_encabuzado = 0.0
+                    if alarma_pitch_encabuzado_activa:
+                        msg_alarma = f"ALARMA PITCH ENCABUZADO DESACTIVADA. Valor: {ts_pitch_float:.1f}°"
+                        guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_ENCABUZADO", "DESACTIVANDO", ts_pitch_float, umbral_min_pitch_float)
+                        agregar_a_consola(msg_alarma)
+                        alarma_pitch_encabuzado_activa = False
                 
                 # Alarma Pitch Sentado
-                condicion_sentado = ts_pitch_float > umbral_max_pitch_float if att_pitch_str != "N/A" else False
-                if condicion_sentado and not alarma_pitch_sentado_activa:
-                    msg_alarma = f"ALARMA PITCH SENTADO ACTIVADA. Valor: {ts_pitch_float:.1f}°, Umbral: {umbral_max_pitch_float:.1f}°"
-                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_SENTADO", "ACTIVANDO", ts_pitch_float, umbral_max_pitch_float)
-                    agregar_a_consola(msg_alarma)
-                elif not condicion_sentado and alarma_pitch_sentado_activa:
-                    msg_alarma = f"ALARMA PITCH SENTADO DESACTIVADA. Valor: {ts_pitch_float:.1f}°"
-                    guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_SENTADO", "DESACTIVANDO", ts_pitch_float, umbral_max_pitch_float)
-                    agregar_a_consola(msg_alarma)
-                alarma_pitch_sentado_activa = condicion_sentado
+                condicion_sentado_fisica = ts_pitch_float > umbral_max_pitch_float if att_pitch_str != "N/A" else False
+                if condicion_sentado_fisica:
+                    if tiempo_inicio_condicion_pitch_sentado == 0.0:
+                        tiempo_inicio_condicion_pitch_sentado = time.time()
+                    
+                    if time.time() - tiempo_inicio_condicion_pitch_sentado >= DURACION_ACTIVACION_ALARMA:
+                        if not alarma_pitch_sentado_activa:
+                            msg_alarma = f"ALARMA PITCH SENTADO ACTIVADA. Valor: {ts_pitch_float:.1f}°, Umbral: {umbral_max_pitch_float:.1f}°"
+                            guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_SENTADO", "ACTIVANDO", ts_pitch_float, umbral_max_pitch_float)
+                            agregar_a_consola(msg_alarma)
+                            alarma_pitch_sentado_activa = True
+                else:
+                    tiempo_inicio_condicion_pitch_sentado = 0.0
+                    if alarma_pitch_sentado_activa:
+                        msg_alarma = f"ALARMA PITCH SENTADO DESACTIVADA. Valor: {ts_pitch_float:.1f}°"
+                        guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_SENTADO", "DESACTIVANDO", ts_pitch_float, umbral_max_pitch_float)
+                        agregar_a_consola(msg_alarma)
+                        alarma_pitch_sentado_activa = False
                 
             except (ValueError, KeyError) as e: # Si hay error en conversión o claves
                 # print(f"Error al procesar umbrales de alarma: {e}")
@@ -3594,6 +3917,10 @@ def draw_test_window(screen, font_test, buffer_datos, copy_message=None):
 # Punto de entrada del programa
 if __name__ == "__main__":
     main()
+
+
+
+
 
 
 
