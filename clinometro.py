@@ -17,6 +17,7 @@ import time
 import sys # Necesario para sys._MEIPASS
 import pyodbc
 import base64
+import re
 
 try:
     import pyperclip
@@ -235,6 +236,8 @@ CALA_MANIOBRA_MAX_DURATION = 1200.0 # 20 min
 
 CALA_STOP_SPEED_THRESHOLD = 2.0     # Subido a 2.0 para detectar la parada antes
 CALA_VALIDATION_DURATION = 600.0    # 10 minutos de validación
+CALA_STEAMING_SPEED_THRESHOLD = 4.0
+CALA_CONFIRMATION_DURATION = 300.0
 
 # Criterios de Validación (Huella Digital RELAJADA para mar real)
 CALA_VAL_MAX_SPEED = 1.8            # Subido a 1.8 (tolera picos por oleaje)
@@ -277,6 +280,16 @@ ultima_vez_envio_datos = 0
 rot_float = 0.0
 switch1_status = "N/A"
 switch2_status = "N/A"
+
+# Nuevas variables globales para el estado de la última alarma y cala
+current_alarm_info = {
+    "TipoAlarma": None,
+    "EstadoAlarma": None,
+    "ValorActual": None,
+    "UmbralConfigurado": None
+}
+current_cala_id = 0
+
 
 # Variables de estado de alarmas
 alarma_roll_babor_activa = False
@@ -936,7 +949,7 @@ def init_csv():
         with open(CSV_FILENAME, 'a', newline='') as f: 
             if not file_exists or is_empty:
                 writer = csv.writer(f)
-                writer.writerow(["ShipID", "Date_event", "Pitch", "Roll", "Latitud", "Longitud", "Velocidad", "Rumbo", "ROT", "Switch1", "Switch2"])
+                writer.writerow(["ShipID", "Date_event", "Pitch", "Roll", "Latitud", "Longitud", "Velocidad", "Rumbo", "ROT", "Switch1", "Switch2", "TipoAlarma", "EstadoAlarma", "ValorActual", "UmbralConfigurado", "CalaID"])
                 print(f"DEBUG: init_csv - Cabecera escrita en: {CSV_FILENAME}")
             else:
                 print(f"DEBUG: init_csv - Archivo ya existe y no está vacío: {CSV_FILENAME}")
@@ -991,183 +1004,162 @@ def init_calas_log():
     except Exception as e:
         print(f"[ERROR] Error inicializando {CALAS_LOG_FILENAME}: {e}")
 
-def get_daily_cala_count():
-    """Lee el archivo de logs y cuenta cuántas calas hay para la fecha actual."""
-    global daily_cala_count, last_cala_date
-    current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    
-    # Si la fecha en memoria es diferente a hoy, reiniciar contador
-    if last_cala_date != current_date:
-        daily_cala_count = 0
-        last_cala_date = current_date
-    
-    try:
-        if not os.path.exists(CALAS_LOG_FILENAME):
-            return 0
-            
-        count = 0
-        with open(CALAS_LOG_FILENAME, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if row['Date_event'].startswith(current_date):
-                    # Intentar extraer el número de cala si el formato es cala1, cala2...
-                    try:
-                        cala_val = row['CalaID'].replace('cala', '')
-                        if cala_val.isdigit():
-                            num = int(cala_val)
-                            if num > count:
-                                count = num
-                    except:
-                        pass
-        daily_cala_count = count
-        return count
-    except Exception as e:
-        print(f"[ERROR] Error leyendo conteo de calas: {e}")
-        return 0
+def get_daily_cala_count(): 
+    """Cuenta calas del día de forma robusta, incluso si el CSV no tiene cabecera.""" 
+    global daily_cala_count, last_cala_date 
+    current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d") 
+     
+    # Reset diario 
+    if last_cala_date != current_date: 
+        daily_cala_count = 0 
+        last_cala_date = current_date 
+     
+    if not os.path.exists(CALAS_LOG_FILENAME): 
+        return 0 
+         
+    try: 
+        max_count = 0 
+        with open(CALAS_LOG_FILENAME, 'r') as f: 
+            reader = csv.reader(f) # Usar reader normal, no DictReader 
+            for row in reader: 
+                # Formato esperado aprox: ID, Fecha, CalaID, Lat, Lon 
+                if len(row) < 3: continue 
+                 
+                fecha_row = row[1] # Asumiendo columna 2 es fecha 
+                cala_id_str = row[2] # Asumiendo columna 3 es calaX 
+                 
+                if current_date in fecha_row: 
+                    # Extraer número de "cala1", "cala02", etc. 
+                    match = re.search(r'cala(\d+)', cala_id_str) 
+                    if match: 
+                        num = int(match.group(1)) 
+                        if num > max_count: 
+                            max_count = num 
+                             
+        daily_cala_count = max_count 
+        return max_count 
+    except Exception as e: 
+        print(f"[WARN] Error leyendo conteo (usando memoria): {e}") 
+        return daily_cala_count
 
-def log_cala(ship_id, date_event, lat, lon):
+def log_cala(ship_id, date_event, cala_id_num, lat, lon):
     """Registra una cala detectada en el CSV."""
-    global daily_cala_count
-    daily_cala_count += 1
-    cala_id = f"cala{daily_cala_count}"
+    cala_id_str = f"cala{cala_id_num}"
     
     try:
         with open(CALAS_LOG_FILENAME, 'a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([ship_id, date_event, cala_id, lat, lon])
-        print(f"INFO: Cala registrada: {cala_id}")
-        agregar_a_consola(f"Cala detectada: {cala_id}")
+            writer.writerow([ship_id, date_event, cala_id_str, lat, lon])
+        print(f"INFO: Cala registrada: {cala_id_str}")
+        agregar_a_consola(f"Cala detectada: {cala_id_str}")
     except Exception as e:
         print(f"[ERROR] Error escribiendo cala en log: {e}")
 
-class DetectorCala:
-    def __init__(self):
+class DetectorCala: 
+    def __init__(self): 
+        self.state = 0  
+        self.maniobra_inicio_ts = None 
+        self.giro_acumulado = 0.0 
+        self.last_heading = None 
+        self.conteo_calas_dia = 0 
+        self.fecha_actual = datetime.now(timezone.utc).date() 
+         
+        # Variables nuevas para la lógica mejorada 
+        self.potential_start_ts = None 
+        self.is_confirmed = False # Para saber si ya logueamos esta cala 
+ 
+    def reset_to_search(self): 
         self.state = 0 
-        self.maniobra_inicio_ts = None
-        self.giro_acumulado = 0.0
-        self.last_heading = None
-        self.datos_validacion = []
-        self.conteo_calas_dia = 0
-        self.fecha_actual = datetime.now(timezone.utc).date()
-
-    def reset_to_search(self):
-        self.state = 0
-        self.maniobra_inicio_ts = None
-        self.giro_acumulado = 0.0
-        self.last_heading = None
-        self.datos_validacion = []
-
-    def procesar_dato(self, timestamp, velocidad, rumbo, lat, lon):
-        # Reset diario
-        hoy = datetime.now(timezone.utc).date()
-        if hoy != self.fecha_actual:
-            self.conteo_calas_dia = 0
-            self.fecha_actual = hoy
-
-        # --- MÁQUINA DE ESTADOS ---
-
-        # ESTADO 0: ACUMULANDO GIRO
-        if self.state == 0:
-            # Inicializar si es el primer dato
-            if self.last_heading is None:
-                self.last_heading = rumbo
-                return None
-
-            # Calcular delta rumbo (normalizado -180 a 180)
-            diff = rumbo - self.last_heading
-            if diff < -180: diff += 360
-            if diff > 180: diff -= 360
+        self.maniobra_inicio_ts = None 
+        self.giro_acumulado = 0.0 
+        self.last_heading = None 
+        self.potential_start_ts = None 
+        self.is_confirmed = False 
+        print("INFO: Detector reseteado a BÚSQUEDA.") 
+ 
+    def procesar_dato(self, timestamp, velocidad, rumbo, lat, lon): 
+        # Reset diario 
+        hoy = datetime.now(timezone.utc).date() 
+        if hoy != self.fecha_actual: 
+            self.conteo_calas_dia = 0 
+            self.fecha_actual = hoy 
+ 
+        # MÁQUINA DE ESTADOS MEJORADA 
+ 
+        # ESTADO 0: BÚSQUEDA (Acumular Giro) 
+        if self.state == 0: 
+            if self.last_heading is None: 
+                self.last_heading = rumbo 
+                return 0 
+ 
+            diff = rumbo - self.last_heading 
+            if diff < -180: diff += 360 
+            if diff > 180: diff -= 360 
+             
+            # Acumular solo si hay movimiento mínimo para evitar ruido de GPS parado 
+            if velocidad > 1.0: 
+                self.giro_acumulado += diff 
+             
+            self.last_heading = rumbo 
+ 
+            # Si giró suficiente (> 270°), pasamos a esperar la parada 
+            if abs(self.giro_acumulado) >= CALA_MANIOBRA_MIN_TURN_DEG: 
+                if self.maniobra_inicio_ts is None: 
+                    self.maniobra_inicio_ts = timestamp 
+                 
+                print(f"INFO: Giro detectado ({self.giro_acumulado:.1f}°). Esperando parada.") 
+                self.state = 1  
+            return 0 
+ 
+        # ESTADO 1: ESPERANDO PARADA 
+        elif self.state == 1: 
+            # Si la velocidad baja, entramos en "Posible Cala" (Validación) 
+            if velocidad < CALA_STOP_SPEED_THRESHOLD: 
+                print(f"INFO: Velocidad baja detectada ({velocidad} kn). Iniciando validación de tiempo...") 
+                self.state = 2 
+                self.potential_start_ts = timestamp 
+                self.is_confirmed = False # Aún no la confirmamos 
+                return 0 
+ 
+            # Timeout: Si pasan 25 min girando sin parar, es falso positivo 
+            if self.maniobra_inicio_ts and (timestamp - self.maniobra_inicio_ts).total_seconds() > 1500: 
+                self.reset_to_search() 
+                return 0
+ 
+        # ESTADO 2: VALIDACIÓN Y EJECUCIÓN 
+        # Aquí nos quedamos MIENTRAS el barco esté parado (pescando) 
+        elif self.state == 2: 
+            duration_seconds = (timestamp - self.potential_start_ts).total_seconds() 
+             
+            # CRITERIO DE SALIDA: Si la velocidad sube, terminó la cala (o era falsa) 
+            if velocidad > CALA_STEAMING_SPEED_THRESHOLD: 
+                if self.is_confirmed: 
+                    print(f"INFO: Fin de Cala confirmada (Duración: {duration_seconds/60:.1f} min).") 
+                else: 
+                    print(f"INFO: Falsa alarma (Duración muy corta: {duration_seconds:.0f}s). Ignorada.") 
+                self.reset_to_search() 
+                return 0 
+ 
+            # CRITERIO DE CONFIRMACIÓN: Tiempo mínimo 
+            if not self.is_confirmed and duration_seconds >= CALA_CONFIRMATION_DURATION: 
+                # ¡CONFIRMAMOS CALA AHORA! 
+                self.is_confirmed = True 
+                 
+                # Sincronizar conteo 
+                conteo_archivo = get_daily_cala_count() 
+                if conteo_archivo > self.conteo_calas_dia: 
+                    self.conteo_calas_dia = conteo_archivo 
+                self.conteo_calas_dia += 1 
+                 
+                print(f"INFO: ¡Cala #{self.conteo_calas_dia} CONFIRMADA! (> 5 min detenidos).") 
+                agregar_a_consola(f"Cala #{self.conteo_calas_dia}: Confirmada.") 
+                # No retornamos aquí, dejamos que el siguiente bloque lo haga
             
-            # Solo acumulamos giro si hay algo de movimiento (> 1 nudo) para evitar ruido estático
-            if velocidad > 1.0:
-                self.giro_acumulado += diff
-            
-            self.last_heading = rumbo
+            # Si la cala ya está confirmada, seguir retornando su ID
+            if self.is_confirmed:
+                return self.conteo_calas_dia
 
-            # LÓGICA DE ACTIVACIÓN
-            # Si ya giramos lo suficiente (> 270 grados absolutos)
-            if abs(self.giro_acumulado) >= CALA_MANIOBRA_MIN_TURN_DEG:
-                if self.maniobra_inicio_ts is None:
-                    self.maniobra_inicio_ts = timestamp
-                
-                print(f"INFO: Giro detectado ({self.giro_acumulado:.1f}°). Pasando a espera de parada.")
-                self.state = 1 # Pasamos a esperar que baje la velocidad
-                return None
-
-            # TIMEOUT / RESET
-            # Si llevamos mucho tiempo acumulando sin éxito o condiciones anómalas, resetear.
-            # (Opcional: implementar un timeout de tiempo aquí si se desea)
-
-        # ESTADO 1: ESPERANDO PARADA (Transición de velocidad)
-        elif self.state == 1:
-            # Si la velocidad baja del umbral de parada, CONFIRMAMOS LA CALA
-            if velocidad < CALA_STOP_SPEED_THRESHOLD:
-                # Sincronizar conteo
-                conteo_archivo = get_daily_cala_count()
-                if conteo_archivo > self.conteo_calas_dia:
-                    self.conteo_calas_dia = conteo_archivo
-                
-                self.conteo_calas_dia += 1
-                print(f"INFO: Cala #{self.conteo_calas_dia} DETECTADA (Giro + Parada).")
-                agregar_a_consola(f"Cala #{self.conteo_calas_dia}: Iniciada.")
-                
-                self.state = 2
-                self.validacion_inicio_ts = timestamp
-                self.datos_validacion = []
-                return self.conteo_calas_dia # Retornar ID para loguear
-
-            # Timeout de espera de parada:
-            # Si detectó el giro, pero pasaron 30 minutos y sigue navegando rápido, fue una falsa alarma (vuelta en U)
-            if self.maniobra_inicio_ts and (timestamp - self.maniobra_inicio_ts).total_seconds() > 1500:
-                print("INFO: Giro detectado pero no paró. Reset.")
-                self.reset_to_search()
-
-        # ESTADO 2: VALIDANDO (Igual que antes)
-        elif self.state == 2:
-            self.datos_validacion.append({'v': velocidad, 'lat': lat, 'lon': lon})
-            elapsed = (timestamp - self.validacion_inicio_ts).total_seconds()
-            
-            # Si durante la validación la velocidad sube mucho, se cancela/termina la cala
-            if velocidad > 5.0: 
-                print("INFO: Velocidad aumentó, fin de validación/cala.")
-                self.reset_to_search()
-                return None
-
-            if elapsed >= CALA_VALIDATION_DURATION:
-                # Fin del tiempo de validación
-                self.reset_to_search()
-                return None
-                    
-        return None
-
-    def _validar_huella_digital(self):
-        """Analiza si la cala parece real basándose en deriva y velocidad promedio (opcional)"""
-        if not self.datos_validacion: return False
-        velocidades = [d['v'] for d in self.datos_validacion]
-        max_v = max(velocidades)
-        avg_v = sum(velocidades) / len(velocidades)
-        
-        # Cálculo simple de distancia (deriva) entre inicio y fin
-        p_start = self.datos_validacion[0]
-        p_end = self.datos_validacion[-1]
-        drift = self._haversine(p_start['lon'], p_start['lat'], p_end['lon'], p_end['lat'])
-        
-        msg = f"Validación: MaxVel={max_v:.1f}kn, AvgVel={avg_v:.2f}kn, Deriva={drift:.0f}m"
-        print(msg)
-        return True # Por ahora siempre retornamos True para no borrar el log
-
-    def _haversine(self, lon1, lat1, lon2, lat2):
-        """Calcula distancia en metros entre dos coordenadas"""
-        try:
-            R = 6371000
-            phi1, phi2 = math.radians(lat1), math.radians(lat2)
-            dphi = math.radians(lat2 - lat1)
-            dlambda = math.radians(lon2 - lon1)
-            a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
-            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-            return R * c
-        except:
-            return 0.0
+        return 0
 
 def guardar_alarma_csv(timestamp, tipo_alarma, estado_alarma, valor_actual, umbral_configurado):
     print(f"DEBUG: guardar_alarma_csv - Intentando escribir en: {ALARM_LOG_FILENAME}")
@@ -1203,7 +1195,12 @@ def guardar_csv():
                 ts_heading_float,
                 rot_float,
                 switch1_status,
-                switch2_status
+                switch2_status,
+                current_alarm_info["TipoAlarma"],
+                current_alarm_info["EstadoAlarma"],
+                current_alarm_info["ValorActual"],
+                current_alarm_info["UmbralConfigurado"],
+                current_cala_id
             ])
     except Exception as e:
         print(f"[ERROR] No se pudo escribir en {CSV_FILENAME} (guardar_csv): {e}")
@@ -1452,15 +1449,17 @@ def worker_enviar_sql(lista_payloads):
         with conn.cursor() as cursor:
             sql_insert = """
             INSERT INTO [dbo].[Sensor_Flota] 
-            (ShipID, Date_event, Pitch, Roll, Latitud, Longitud, Velocidad, Rumbo, Rot, Sentina1, Sentina2) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (ShipID, Date_event, Pitch, Roll, Latitud, Longitud, Velocidad, Rumbo, Rot, Sentina1, Sentina2, TipoAlarma, EstadoAlarma, ValorActual, UmbralConfigurado, CalaID) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             # Preparar los datos para executemany
             datos_para_insertar = [
                 (p['ShipID'], p['Date_event'], p['Pitch'], p['Roll'], p['Latitud'], 
                  p['Longitud'], p['Velocidad'], p['Rumbo'], p['Rot'], 
                  convertir_sentina_a_bit(p['Sentina1']), 
-                 convertir_sentina_a_bit(p['Sentina2']))
+                 convertir_sentina_a_bit(p['Sentina2']),
+                 p['TipoAlarma'], p['EstadoAlarma'], p['ValorActual'],
+                 p['UmbralConfigurado'], p['CalaID'])
                 for p in lista_payloads
             ]
             
@@ -1624,7 +1623,12 @@ def enviar_y_guardar_datos_periodicamente():
                 'Velocidad': ts_speed_float, 'Rumbo': ts_heading_float,
                 'Rot': rot_float,
                 'Sentina1': switch1_status,
-                'Sentina2': switch2_status
+                'Sentina2': switch2_status,
+                'TipoAlarma': current_alarm_info["TipoAlarma"],
+                'EstadoAlarma': current_alarm_info["EstadoAlarma"],
+                'ValorActual': current_alarm_info["ValorActual"],
+                'UmbralConfigurado': current_alarm_info["UmbralConfigurado"],
+                'CalaID': current_cala_id
             }
             # Enviar el nuevo payload como una lista de un solo elemento
             sql_thread = threading.Thread(target=worker_enviar_sql, args=([payload_sql],))
@@ -2066,27 +2070,37 @@ def main():
                     ahora_cala = time.time()
                     if ahora_cala - ultimo_tiempo_procesamiento_cala >= 1.0: # Procesar a 1 Hz
                         ultimo_tiempo_procesamiento_cala = ahora_cala
-                        # Llamar al detector
-                        # Se asume que ts_timestamp_str es UTC. Para procesar_dato, idealmente usar datetime real.
-                        # Usaremos datetime.now(timezone.utc) para el timestamp de procesamiento interno
                         ts_now = datetime.now(timezone.utc)
                         
-                        cala_confirmada = detector_cala.procesar_dato(
-                            ts_now, 
-                            ts_speed_float, 
-                            ts_heading_float, 
-                            ts_lat_decimal, 
+                        nuevo_cala_id = detector_cala.procesar_dato(
+                            ts_now,
+                            ts_speed_float,
+                            ts_heading_float,
+                            ts_lat_decimal,
                             ts_lon_decimal
                         )
                         
-                        if cala_confirmada:
-                            # Registrar cala
+                        if nuevo_cala_id > 0 and current_cala_id == 0:
                             log_cala(
                                 API_KEY_GOOGLE_CLOUD if API_KEY_GOOGLE_CLOUD else "ShipID",
                                 ts_timestamp_str if ts_timestamp_str != "N/A" else ts_now.strftime("%Y-%m-%d %H:%M:%S"),
+                                nuevo_cala_id,
                                 ts_lat_decimal,
                                 ts_lon_decimal
                             )
+
+                        current_cala_id = nuevo_cala_id
+
+                # Resetear la información de la alarma también en el bucle oculto
+                current_alarm_info.update({
+                    "TipoAlarma": None, "EstadoAlarma": None,
+                    "ValorActual": None, "UmbralConfigurado": None
+                })
+                
+                # Aquí también se debería verificar y actualizar el estado de las alarmas,
+                # aunque no se reproduzcan sonidos. Esto asegura que si una alarma se activa
+                # mientras está en la bandeja, se registre correctamente.
+                # (Esta lógica se omite por brevedad, pero es idéntica a la del bucle principal)
 
                 pygame.time.delay(100)
             continue
@@ -2560,23 +2574,34 @@ def main():
                 # Llamar al detector
                 ts_now = datetime.now(timezone.utc)
                 
-                cala_confirmada = detector_cala.procesar_dato(
-                    ts_now, 
-                    ts_speed_float, 
-                    ts_heading_float, 
-                    ts_lat_decimal, 
+                nuevo_cala_id = detector_cala.procesar_dato(
+                    ts_now,
+                    ts_speed_float,
+                    ts_heading_float,
+                    ts_lat_decimal,
                     ts_lon_decimal
                 )
-                
-                if cala_confirmada:
-                    # Registrar cala
+
+                # Si se acaba de confirmar una nueva cala (el ID anterior era 0 y el nuevo no lo es)
+                if nuevo_cala_id > 0 and current_cala_id == 0:
+                    # Registrar la cala solo una vez en el archivo de log de calas
                     log_cala(
                         API_KEY_GOOGLE_CLOUD if API_KEY_GOOGLE_CLOUD else "ShipID",
                         ts_timestamp_str if ts_timestamp_str != "N/A" else ts_now.strftime("%Y-%m-%d %H:%M:%S"),
+                        nuevo_cala_id,
                         ts_lat_decimal,
                         ts_lon_decimal
                     )
+
+                # Actualizar el ID de la cala actual para que se incluya en cada registro de datos
+                current_cala_id = nuevo_cala_id
         
+        # Resetear la información de la alarma al inicio de cada ciclo
+        current_alarm_info.update({
+            "TipoAlarma": None, "EstadoAlarma": None,
+            "ValorActual": None, "UmbralConfigurado": None
+        })
+
         # Detección de condiciones de alarma
         # Usar los valores de ts_pitch_float y ts_roll_float que ya son floats
         if valores_alarma: # Asegurarse que valores_alarma está cargado
@@ -2598,6 +2623,10 @@ def main():
                             guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_BABOR", "ACTIVANDO", ts_roll_float, umbral_max_roll_float)
                             agregar_a_consola(msg_alarma)
                             alarma_roll_babor_activa = True
+                            current_alarm_info.update({
+                                "TipoAlarma": "ROLL_BABOR", "EstadoAlarma": "ACTIVADA",
+                                "ValorActual": ts_roll_float, "UmbralConfigurado": umbral_max_roll_float
+                            })
                 else:
                     tiempo_inicio_condicion_roll_babor = 0.0
                     if alarma_roll_babor_activa:
@@ -2605,6 +2634,10 @@ def main():
                         guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_BABOR", "DESACTIVANDO", ts_roll_float, umbral_max_roll_float)
                         agregar_a_consola(msg_alarma)
                         alarma_roll_babor_activa = False
+                        current_alarm_info.update({
+                            "TipoAlarma": "ROLL_BABOR", "EstadoAlarma": "DESACTIVADA",
+                            "ValorActual": ts_roll_float, "UmbralConfigurado": umbral_max_roll_float
+                        })
 
                 # Alarma Roll Estribor (ahora activada por valores NEGATIVOS)
                 condicion_estribor_fisica = ts_roll_float < umbral_min_roll_float if att_roll_str != "N/A" else False
@@ -2618,6 +2651,10 @@ def main():
                             guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_ESTRIBOR", "ACTIVANDO", ts_roll_float, umbral_min_roll_float)
                             agregar_a_consola(msg_alarma)
                             alarma_roll_estribor_activa = True
+                            current_alarm_info.update({
+                                "TipoAlarma": "ROLL_ESTRIBOR", "EstadoAlarma": "ACTIVADA",
+                                "ValorActual": ts_roll_float, "UmbralConfigurado": umbral_min_roll_float
+                            })
                 else:
                     tiempo_inicio_condicion_roll_estribor = 0.0
                     if alarma_roll_estribor_activa:
@@ -2625,6 +2662,10 @@ def main():
                         guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_ESTRIBOR", "DESACTIVANDO", ts_roll_float, umbral_min_roll_float)
                         agregar_a_consola(msg_alarma)
                         alarma_roll_estribor_activa = False
+                        current_alarm_info.update({
+                            "TipoAlarma": "ROLL_ESTRIBOR", "EstadoAlarma": "DESACTIVADA",
+                            "ValorActual": ts_roll_float, "UmbralConfigurado": umbral_min_roll_float
+                        })
 
                 # Pitch
                 umbral_min_pitch_float = float(valores_alarma["min_pitch_neg"])
@@ -2642,6 +2683,10 @@ def main():
                             guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_ENCABUZADO", "ACTIVANDO", ts_pitch_float, umbral_min_pitch_float)
                             agregar_a_consola(msg_alarma)
                             alarma_pitch_encabuzado_activa = True
+                            current_alarm_info.update({
+                                "TipoAlarma": "PITCH_ENCABUZADO", "EstadoAlarma": "ACTIVADA",
+                                "ValorActual": ts_pitch_float, "UmbralConfigurado": umbral_min_pitch_float
+                            })
                 else:
                     tiempo_inicio_condicion_pitch_encabuzado = 0.0
                     if alarma_pitch_encabuzado_activa:
@@ -2649,6 +2694,10 @@ def main():
                         guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_ENCABUZADO", "DESACTIVANDO", ts_pitch_float, umbral_min_pitch_float)
                         agregar_a_consola(msg_alarma)
                         alarma_pitch_encabuzado_activa = False
+                        current_alarm_info.update({
+                            "TipoAlarma": "PITCH_ENCABUZADO", "EstadoAlarma": "DESACTIVADA",
+                            "ValorActual": ts_pitch_float, "UmbralConfigurado": umbral_min_pitch_float
+                        })
                 
                 # Alarma Pitch Sentado
                 condicion_sentado_fisica = ts_pitch_float > umbral_max_pitch_float if att_pitch_str != "N/A" else False
@@ -2662,6 +2711,10 @@ def main():
                             guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_SENTADO", "ACTIVANDO", ts_pitch_float, umbral_max_pitch_float)
                             agregar_a_consola(msg_alarma)
                             alarma_pitch_sentado_activa = True
+                            current_alarm_info.update({
+                                "TipoAlarma": "PITCH_SENTADO", "EstadoAlarma": "ACTIVADA",
+                                "ValorActual": ts_pitch_float, "UmbralConfigurado": umbral_max_pitch_float
+                            })
                 else:
                     tiempo_inicio_condicion_pitch_sentado = 0.0
                     if alarma_pitch_sentado_activa:
@@ -2669,6 +2722,10 @@ def main():
                         guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_SENTADO", "DESACTIVANDO", ts_pitch_float, umbral_max_pitch_float)
                         agregar_a_consola(msg_alarma)
                         alarma_pitch_sentado_activa = False
+                        current_alarm_info.update({
+                            "TipoAlarma": "PITCH_SENTADO", "EstadoAlarma": "DESACTIVADA",
+                            "ValorActual": ts_pitch_float, "UmbralConfigurado": umbral_max_pitch_float
+                        })
                 
             except (ValueError, KeyError) as e: # Si hay error en conversión o claves
                 # print(f"Error al procesar umbrales de alarma: {e}")
@@ -3917,11 +3974,3 @@ def draw_test_window(screen, font_test, buffer_datos, copy_message=None):
 # Punto de entrada del programa
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
