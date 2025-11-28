@@ -215,7 +215,6 @@ THINGSPEAK_URL = "https://api.thingspeak.com/update"
 
 # Añade estas nuevas definiciones:
 CSV_FILENAME = get_persistent_data_path("nmea_log.csv") # MODIFICADO
-ALARM_LOG_FILENAME = get_persistent_data_path("alarm_log.csv") # MODIFICADO
 
 INTERVALO_ENVIO_DATOS_S = 15
 INTERVALO_REPETICION_ALARMA_ROLL_S = 5
@@ -226,7 +225,6 @@ ARCHIVO_CONFIG_ALARMA = get_persistent_data_path("config_alarma.json") # MODIFIC
 FIRST_RUN_FILE = get_persistent_data_path("first_run.json")
 SQL_BUFFER_FILE = get_persistent_data_path("sql_buffer.json")
 THINGSPEAK_BUFFER_FILE = get_persistent_data_path("thingspeak_buffer.json")
-CALAS_LOG_FILENAME = get_persistent_data_path("calas_log.csv")
 
 # Constantes para detección de calas (AJUSTADAS)
 CALA_MANIOBRA_MIN_SPEED = 8.0       # Bajado a 8.0 para no perder el giro si reduce un poco
@@ -966,46 +964,8 @@ def agregar_a_consola(mensaje: str):
     datos_consola_buffer.append(f"[{time.strftime('%H:%M:%S')}] {mensaje}")
 
 
-def init_alarm_csv():
-    print(f"DEBUG: init_alarm_csv - Intentando inicializar/verificar: {ALARM_LOG_FILENAME}")
-    try:
-        file_exists_before_open = os.path.exists(ALARM_LOG_FILENAME)
-        is_empty = False
-        if file_exists_before_open:
-            is_empty = os.path.getsize(ALARM_LOG_FILENAME) == 0
-        
-        with open(ALARM_LOG_FILENAME, 'a', newline='') as f:
-            if not file_exists_before_open or is_empty:
-                writer = csv.writer(f)
-                writer.writerow(["ShipID", "Date_event", "Latitud", "Longitud", "TipoAlarma", "EstadoAlarma", "ValorActual", "UmbralConfigurado"])
-                print(f"DEBUG: init_alarm_csv - Cabecera escrita en: {ALARM_LOG_FILENAME}")
-            else:
-                print(f"DEBUG: init_alarm_csv - Archivo ya existe y no está vacío: {ALARM_LOG_FILENAME}")
-        print(f"DEBUG: init_alarm_csv - Finalizado para: {ALARM_LOG_FILENAME}")
-
-    except FileExistsError: 
-        print(f"DEBUG: init_alarm_csv - Archivo ya existe (manejado por FileExistsError): {ALARM_LOG_FILENAME}")
-        pass 
-    except Exception as e:
-        print(f"[ERROR] En init_alarm_csv para {ALARM_LOG_FILENAME}: {e}")
-
-def init_calas_log():
-    """Inicializa el archivo de registro de calas si no existe."""
-    try:
-        file_exists = os.path.exists(CALAS_LOG_FILENAME)
-        is_empty = False
-        if file_exists:
-            is_empty = os.path.getsize(CALAS_LOG_FILENAME) == 0
-        
-        with open(CALAS_LOG_FILENAME, 'a', newline='') as f:
-            if not file_exists or is_empty:
-                writer = csv.writer(f)
-                writer.writerow(["ShipID", "Date_event", "CalaID", "Latitud", "Longitud"])
-    except Exception as e:
-        print(f"[ERROR] Error inicializando {CALAS_LOG_FILENAME}: {e}")
-
 def get_daily_cala_count(): 
-    """Cuenta calas del día de forma robusta, incluso si el CSV no tiene cabecera.""" 
+    """Cuenta calas del día usando nmea_log.csv."""
     global daily_cala_count, last_cala_date 
     current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d") 
      
@@ -1014,46 +974,141 @@ def get_daily_cala_count():
         daily_cala_count = 0 
         last_cala_date = current_date 
      
-    if not os.path.exists(CALAS_LOG_FILENAME): 
+    if not os.path.exists(CSV_FILENAME):
         return 0 
          
     try: 
         max_count = 0 
-        with open(CALAS_LOG_FILENAME, 'r') as f: 
-            reader = csv.reader(f) # Usar reader normal, no DictReader 
+        with open(CSV_FILENAME, 'r') as f:
+            reader = csv.reader(f)
             for row in reader: 
-                # Formato esperado aprox: ID, Fecha, CalaID, Lat, Lon 
-                if len(row) < 3: continue 
-                 
-                fecha_row = row[1] # Asumiendo columna 2 es fecha 
-                cala_id_str = row[2] # Asumiendo columna 3 es calaX 
-                 
-                if current_date in fecha_row: 
-                    # Extraer número de "cala1", "cala02", etc. 
-                    match = re.search(r'cala(\d+)', cala_id_str) 
-                    if match: 
-                        num = int(match.group(1)) 
-                        if num > max_count: 
-                            max_count = num 
+                # Check for enough columns. CalaID is at index 15 (16th column)
+                if len(row) < 16:
+                    continue
+
+                # Check if it's a header row
+                if row[1] == "Date_event":
+                    continue
+
+                fecha_row = row[1]
+                cala_id_str = row[15] # CalaID column
+
+                # Ensure date matches
+                if current_date in fecha_row:
+                    try:
+                        num = int(cala_id_str)
+                        if num > max_count:
+                            max_count = num
+                    except ValueError:
+                        pass # Ignore if not a number
                              
         daily_cala_count = max_count 
         return max_count 
     except Exception as e: 
-        print(f"[WARN] Error leyendo conteo (usando memoria): {e}") 
+        print(f"[WARN] Error leyendo conteo de calas (usando memoria): {e}")
         return daily_cala_count
 
-def log_cala(ship_id, date_event, cala_id_num, lat, lon):
-    """Registra una cala detectada en el CSV."""
+def registrar_evento_cala(ship_id, date_event, cala_id_num, lat, lon):
+    """Registra una cala detectada forzando el envío de datos."""
     cala_id_str = f"cala{cala_id_num}"
+    print(f"INFO: Cala registrada: {cala_id_str}")
+    agregar_a_consola(f"Cala detectada: {cala_id_str}")
+
+    overrides = {
+        'ShipID': ship_id,
+        'Date_event': date_event,
+        'CalaID': cala_id_num,
+        'Latitud': lat,
+        'Longitud': lon
+    }
+
+    # Forzar el guardado y envío inmediato
+    enviar_y_guardar_datos_periodicamente(force=True, overrides=overrides)
+
+def guardar_alarma_csv(timestamp, tipo_alarma, estado_alarma, valor_actual, umbral_configurado):
+    """
+    Actualiza el estado global de alarmas y fuerza el guardado inmediato.
+    """
+    current_alarm_info.update({
+        "TipoAlarma": tipo_alarma,
+        "EstadoAlarma": estado_alarma,
+        "ValorActual": valor_actual,
+        "UmbralConfigurado": umbral_configurado
+    })
+    print(f"INFO: Registrando evento de alarma: {tipo_alarma} - {estado_alarma}")
+    # Forzar envío y guardado inmediato a Azure/CSV
+    enviar_y_guardar_datos_periodicamente(force=True)
+
+def procesar_logica_alarmas():
+    """
+    Verifica los ángulos, gestiona temporizadores y dispara alarmas.
+    Funciona tanto con ventana visible como oculta.
+    """
+    global alarma_roll_babor_activa, alarma_roll_estribor_activa
+    global alarma_pitch_sentado_activa, alarma_pitch_encabuzado_activa
+    global tiempo_inicio_condicion_roll_babor, tiempo_inicio_condicion_roll_estribor
+    global tiempo_inicio_condicion_pitch_sentado, tiempo_inicio_condicion_pitch_encabuzado
     
+    if not valores_alarma: return
+    ahora = time.time()
+
     try:
-        with open(CALAS_LOG_FILENAME, 'a', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([ship_id, date_event, cala_id_str, lat, lon])
-        print(f"INFO: Cala registrada: {cala_id_str}")
-        agregar_a_consola(f"Cala detectada: {cala_id_str}")
-    except Exception as e:
-        print(f"[ERROR] Error escribiendo cala en log: {e}")
+        # Leer umbrales
+        umbral_min_roll = float(valores_alarma["min_roll_neg"])
+        umbral_max_roll = float(valores_alarma["max_roll_pos"])
+        umbral_min_pitch = float(valores_alarma["min_pitch_neg"])
+        umbral_max_pitch = float(valores_alarma["max_pitch_pos"])
+
+        # --- ROLL BABOR ---
+        if (ts_roll_float > umbral_max_roll if att_roll_str != "N/A" else False):
+            if tiempo_inicio_condicion_roll_babor == 0.0: tiempo_inicio_condicion_roll_babor = ahora
+            if ahora - tiempo_inicio_condicion_roll_babor >= DURACION_ACTIVACION_ALARMA and not alarma_roll_babor_activa:
+                alarma_roll_babor_activa = True
+                guardar_alarma_csv(ts_timestamp_str, "ROLL_BABOR", "ACTIVADA", ts_roll_float, umbral_max_roll)
+        else:
+            tiempo_inicio_condicion_roll_babor = 0.0
+            if alarma_roll_babor_activa:
+                alarma_roll_babor_activa = False
+                guardar_alarma_csv(ts_timestamp_str, "ROLL_BABOR", "DESACTIVADA", ts_roll_float, umbral_max_roll)
+
+        # --- ROLL ESTRIBOR ---
+        if (ts_roll_float < umbral_min_roll if att_roll_str != "N/A" else False):
+            if tiempo_inicio_condicion_roll_estribor == 0.0: tiempo_inicio_condicion_roll_estribor = ahora
+            if ahora - tiempo_inicio_condicion_roll_estribor >= DURACION_ACTIVACION_ALARMA and not alarma_roll_estribor_activa:
+                alarma_roll_estribor_activa = True
+                guardar_alarma_csv(ts_timestamp_str, "ROLL_ESTRIBOR", "ACTIVADA", ts_roll_float, umbral_min_roll)
+        else:
+            tiempo_inicio_condicion_roll_estribor = 0.0
+            if alarma_roll_estribor_activa:
+                alarma_roll_estribor_activa = False
+                guardar_alarma_csv(ts_timestamp_str, "ROLL_ESTRIBOR", "DESACTIVADA", ts_roll_float, umbral_min_roll)
+
+        # --- PITCH ENCABUZADO ---
+        if (ts_pitch_float < umbral_min_pitch if att_pitch_str != "N/A" else False):
+            if tiempo_inicio_condicion_pitch_encabuzado == 0.0: tiempo_inicio_condicion_pitch_encabuzado = ahora
+            if ahora - tiempo_inicio_condicion_pitch_encabuzado >= DURACION_ACTIVACION_ALARMA and not alarma_pitch_encabuzado_activa:
+                alarma_pitch_encabuzado_activa = True
+                guardar_alarma_csv(ts_timestamp_str, "PITCH_ENCABUZADO", "ACTIVADA", ts_pitch_float, umbral_min_pitch)
+        else:
+            tiempo_inicio_condicion_pitch_encabuzado = 0.0
+            if alarma_pitch_encabuzado_activa:
+                alarma_pitch_encabuzado_activa = False
+                guardar_alarma_csv(ts_timestamp_str, "PITCH_ENCABUZADO", "DESACTIVADA", ts_pitch_float, umbral_min_pitch)
+
+        # --- PITCH SENTADO ---
+        if (ts_pitch_float > umbral_max_pitch if att_pitch_str != "N/A" else False):
+            if tiempo_inicio_condicion_pitch_sentado == 0.0: tiempo_inicio_condicion_pitch_sentado = ahora
+            if ahora - tiempo_inicio_condicion_pitch_sentado >= DURACION_ACTIVACION_ALARMA and not alarma_pitch_sentado_activa:
+                alarma_pitch_sentado_activa = True
+                guardar_alarma_csv(ts_timestamp_str, "PITCH_SENTADO", "ACTIVADA", ts_pitch_float, umbral_max_pitch)
+        else:
+            tiempo_inicio_condicion_pitch_sentado = 0.0
+            if alarma_pitch_sentado_activa:
+                alarma_pitch_sentado_activa = False
+                guardar_alarma_csv(ts_timestamp_str, "PITCH_SENTADO", "DESACTIVADA", ts_pitch_float, umbral_max_pitch)
+
+    except Exception:
+        pass
 
 class DetectorCala: 
     def __init__(self): 
@@ -1161,46 +1216,27 @@ class DetectorCala:
 
         return 0
 
-def guardar_alarma_csv(timestamp, tipo_alarma, estado_alarma, valor_actual, umbral_configurado):
-    print(f"DEBUG: guardar_alarma_csv - Intentando escribir en: {ALARM_LOG_FILENAME}")
-    
-    # Use globals for location and ship ID
-    ship_id = API_KEY_GOOGLE_CLOUD if API_KEY_GOOGLE_CLOUD else "ShipID"
-    lat = ts_lat_decimal
-    lon = ts_lon_decimal
-    
-    print(f"DEBUG: Datos a guardar: Ship={ship_id}, TS={timestamp}, Lat={lat}, Lon={lon}, Tipo={tipo_alarma}, Estado={estado_alarma}, Val={valor_actual}, Umbral={umbral_configurado}")
+def guardar_csv(datos):
     try:
-        with open(ALARM_LOG_FILENAME, 'a', newline='') as f: 
-            writer = csv.writer(f)
-            writer.writerow([ship_id, timestamp, lat, lon, tipo_alarma, estado_alarma, valor_actual, umbral_configurado])
-        print(f"DEBUG: guardar_alarma_csv - Escritura exitosa en: {ALARM_LOG_FILENAME}")
-    except Exception as e:
-        print(f"[ERROR] No se pudo escribir en {ALARM_LOG_FILENAME}: {e}")
-
-
-def guardar_csv():
-    try:
-        timestamp_final = ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         with open(CSV_FILENAME, 'a', newline='') as f: 
             writer = csv.writer(f)
             writer.writerow([
-                API_KEY_GOOGLE_CLOUD, # Nombre del barco
-                timestamp_final,
-                ts_pitch_float, 
-                ts_roll_float, 
-                ts_lat_decimal, 
-                ts_lon_decimal, 
-                ts_speed_float, 
-                ts_heading_float,
-                rot_float,
-                switch1_status,
-                switch2_status,
-                current_alarm_info["TipoAlarma"],
-                current_alarm_info["EstadoAlarma"],
-                current_alarm_info["ValorActual"],
-                current_alarm_info["UmbralConfigurado"],
-                current_cala_id
+                datos.get('ShipID'),
+                datos.get('Date_event'),
+                datos.get('Pitch'),
+                datos.get('Roll'),
+                datos.get('Latitud'),
+                datos.get('Longitud'),
+                datos.get('Velocidad'),
+                datos.get('Rumbo'),
+                datos.get('Rot'),
+                datos.get('Sentina1'),
+                datos.get('Sentina2'),
+                datos.get('TipoAlarma'),
+                datos.get('EstadoAlarma'),
+                datos.get('ValorActual'),
+                datos.get('UmbralConfigurado'),
+                datos.get('CalaID')
             ])
     except Exception as e:
         print(f"[ERROR] No se pudo escribir en {CSV_FILENAME} (guardar_csv): {e}")
@@ -1298,30 +1334,38 @@ def worker_enviar_thingspeak(lista_payloads):
             guardar_en_buffer_thingspeak(payloads_restantes, reason=reason)
             return # Salir del bucle y del hilo
 
-def enviar_thingspeak():
+def enviar_thingspeak(datos):
     # Esta función ahora solo prepara y lanza el hilo con una lista de un solo payload.
     estado_alarma_para_thingspeak = "SIN ALARMA"
-    if alarma_roll_babor_activa:
-        estado_alarma_para_thingspeak = "ALARMA BABOR"
-    elif alarma_roll_estribor_activa:
-        estado_alarma_para_thingspeak = "ALARMA ESTRIBOR"
     
-    if alarma_pitch_sentado_activa:
-        estado_alarma_para_thingspeak += " Y SENTADO" if "ALARMA" in estado_alarma_para_thingspeak else "ALARMA SENTADO"
-    elif alarma_pitch_encabuzado_activa:
-        estado_alarma_para_thingspeak += " Y ENCABUZADO" if "ALARMA" in estado_alarma_para_thingspeak else "ALARMA ENCABUZADO"
+    # Construir estado de alarma desde datos si es posible, o usar globales (compatibilidad)
+    # Usaremos los datos pasados si tienen info de alarma (TipoAlarma != None)
+    # Pero los flags booleanos globales son más expresivos para "estado actual" visual.
+    # Para consistencia con el payload 'status' de texto:
+    if datos.get('TipoAlarma'):
+         estado_alarma_para_thingspeak = f"ALARMA {datos.get('TipoAlarma')}"
+    else:
+        if alarma_roll_babor_activa:
+            estado_alarma_para_thingspeak = "ALARMA BABOR"
+        elif alarma_roll_estribor_activa:
+            estado_alarma_para_thingspeak = "ALARMA ESTRIBOR"
+
+        if alarma_pitch_sentado_activa:
+            estado_alarma_para_thingspeak += " Y SENTADO" if "ALARMA" in estado_alarma_para_thingspeak else "ALARMA SENTADO"
+        elif alarma_pitch_encabuzado_activa:
+            estado_alarma_para_thingspeak += " Y ENCABUZADO" if "ALARMA" in estado_alarma_para_thingspeak else "ALARMA ENCABUZADO"
 
     payload = {
         'api_key': API_KEY_THINGSPEAK, 
-        'field1': ts_pitch_float, 
-        'field2': ts_roll_float, 
-        'field3': ts_lat_decimal, 
-        'field4': ts_lon_decimal, 
-        'field5': ts_speed_float, 
-        'field6': ts_heading_float, 
-        'field7': ts_altitude_float,
-        'field8': rot_float,
-        'status': f"Sentina1: {switch1_status}, Sentina2: {switch2_status}, Alarma: {estado_alarma_para_thingspeak}"
+        'field1': datos.get('Pitch'),
+        'field2': datos.get('Roll'),
+        'field3': datos.get('Latitud'),
+        'field4': datos.get('Longitud'),
+        'field5': datos.get('Velocidad'),
+        'field6': datos.get('Rumbo'),
+        'field7': datos.get('Altitude', 0.0),
+        'field8': datos.get('Rot'),
+        'status': f"Sentina1: {datos.get('Sentina1')}, Sentina2: {datos.get('Sentina2')}, Alarma: {estado_alarma_para_thingspeak}"
     }
     
     # Crear y lanzar el hilo, pasando el payload dentro de una lista
@@ -1555,11 +1599,11 @@ def reenviar_buffer_thingspeak_si_necesario():
             agregar_a_consola(msg_err)
 
 
-def enviar_y_guardar_datos_periodicamente():
-    """Guarda en CSV y envía a servicios en la nube a intervalos regulares."""
+def enviar_y_guardar_datos_periodicamente(force=False, overrides=None):
+    """Guarda en CSV y envía a servicios en la nube a intervalos regulares o forzado."""
     global ultima_vez_envio_datos
 
-    if time.time() - ultima_vez_envio_datos < INTERVALO_ENVIO_DATOS_S:
+    if not force and time.time() - ultima_vez_envio_datos < INTERVALO_ENVIO_DATOS_S:
         return
 
     # --- 1. Reenviar datos de AMBOS buffers si es necesario ---
@@ -1574,19 +1618,44 @@ def enviar_y_guardar_datos_periodicamente():
         ultima_vez_envio_datos = time.time() # Resetear timer para no reintentar inmediatamente
         return
 
-    # Evitar el envío de registros con todos los valores numéricos en cero
-    if (ts_pitch_float == 0.0 and ts_roll_float == 0.0 and
-        ts_lat_decimal == 0.0 and ts_lon_decimal == 0.0 and
-        ts_speed_float == 0.0 and ts_heading_float == 0.0 and rot_float == 0.0):
+    # Construir diccionario de datos base con valores globales
+    timestamp_base = ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    datos = {
+        'ShipID': API_KEY_GOOGLE_CLOUD if API_KEY_GOOGLE_CLOUD else "(no definido)",
+        'Date_event': timestamp_base,
+        'Pitch': ts_pitch_float,
+        'Roll': ts_roll_float,
+        'Latitud': ts_lat_decimal,
+        'Longitud': ts_lon_decimal,
+        'Velocidad': ts_speed_float,
+        'Rumbo': ts_heading_float,
+        'Rot': rot_float,
+        'Altitude': ts_altitude_float,
+        'Sentina1': switch1_status,
+        'Sentina2': switch2_status,
+        'TipoAlarma': current_alarm_info["TipoAlarma"],
+        'EstadoAlarma': current_alarm_info["EstadoAlarma"],
+        'ValorActual': current_alarm_info["ValorActual"],
+        'UmbralConfigurado': current_alarm_info["UmbralConfigurado"],
+        'CalaID': current_cala_id
+    }
+
+    # Aplicar overrides si existen (e.g., para eventos específicos de cala o alarma)
+    if overrides:
+        datos.update(overrides)
+
+    # Evitar el envío de registros con todos los valores numéricos en cero (si no hay overrides que lo justifiquen)
+    # Si hay overrides (ej. alarma o cala), forzamos el envío aunque sean ceros (aunque raramente lo serán)
+    if not overrides and (datos['Pitch'] == 0.0 and datos['Roll'] == 0.0 and
+        datos['Latitud'] == 0.0 and datos['Longitud'] == 0.0 and
+        datos['Velocidad'] == 0.0 and datos['Rumbo'] == 0.0 and datos['Rot'] == 0.0):
         print("INFO: Se omite el envío de un registro con todos los valores numéricos en cero.")
         agregar_a_consola("Omitido: Registro de datos nulos.")
         ultima_vez_envio_datos = time.time() # Asegurarse de que el temporizador se reinicie
         return
 
-    # Preparar los datos para el log
-    ship_id_log = API_KEY_GOOGLE_CLOUD if API_KEY_GOOGLE_CLOUD else "(no definido)"
-    timestamp_log = ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-
+    # Preparar los datos para el log en consola
     # Determinar el destino para el log
     if SERVICIO_DATOS_ACTUAL == "azure_sql":
         destino_log = f"{AZURE_SQL_USER}@{AZURE_SQL_SERVER}"
@@ -1596,42 +1665,37 @@ def enviar_y_guardar_datos_periodicamente():
         destino_log = "Servicio no definido"
 
     log_msg = (
-        f"Destino: {destino_log}, ID:{ship_id_log}, Date:{timestamp_log}, P:{ts_pitch_float:.1f}, R:{ts_roll_float:.1f}, "
-        f"Lat:{ts_lat_decimal}, Lon:{ts_lon_decimal}, Spd:{ts_speed_float}, Hdg:{ts_heading_float}, "
-        f"ROT:{rot_float:.1f}, S1:{switch1_status}, S2:{switch2_status}"
+        f"Destino: {destino_log}, ID:{datos['ShipID']}, Date:{datos['Date_event']}, "
+        f"P:{datos['Pitch']:.1f}, R:{datos['Roll']:.1f}, "
+        f"Lat:{datos['Latitud']}, Lon:{datos['Longitud']}, Spd:{datos['Velocidad']}, Hdg:{datos['Rumbo']}, "
+        f"ROT:{datos['Rot']:.1f}, S1:{datos['Sentina1']}, S2:{datos['Sentina2']}"
     )
+    if datos.get('CalaID'):
+        log_msg += f", CalaID:{datos['CalaID']}"
 
     print(f"--- Guardando y Enviando Datos ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---")
     print(log_msg)
     agregar_a_consola(log_msg)
 
     # Guardar en CSV
-    guardar_csv()
+    guardar_csv(datos)
     agregar_a_consola(f"Guardado en CSV: {CSV_FILENAME}")
 
     # Enviar a servicio en la nube si hay red
     if network_available:
         if SERVICIO_DATOS_ACTUAL == "thingspeak":
-            enviar_thingspeak()
+            enviar_thingspeak(datos)
         elif SERVICIO_DATOS_ACTUAL == "azure_sql":
-            timestamp_final = ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-            payload_sql = {
-                'ShipID': API_KEY_GOOGLE_CLOUD,
-                'Date_event': timestamp_final,
-                'Pitch': ts_pitch_float, 'Roll': ts_roll_float,
-                'Latitud': ts_lat_decimal, 'Longitud': ts_lon_decimal,
-                'Velocidad': ts_speed_float, 'Rumbo': ts_heading_float,
-                'Rot': rot_float,
-                'Sentina1': switch1_status,
-                'Sentina2': switch2_status,
-                'TipoAlarma': current_alarm_info["TipoAlarma"],
-                'EstadoAlarma': current_alarm_info["EstadoAlarma"],
-                'ValorActual': current_alarm_info["ValorActual"],
-                'UmbralConfigurado': current_alarm_info["UmbralConfigurado"],
-                'CalaID': current_cala_id
-            }
+            # worker_enviar_sql espera una lista de diccionarios con las claves correctas
+            # 'datos' ya tiene las claves (ShipID, Date_event, etc.) coincidentes con lo que espera SQL
+            # excepto 'Altitude' que sobra pero no molesta si no se usa en worker.
+
+            # Crear payload para SQL (filtrando lo necesario si se quisiera, pero worker usa claves específicas)
+            # worker usa: ShipID, Date_event, Pitch, Roll, Latitud, Longitud, Velocidad, Rumbo, Rot, Sentina1, Sentina2, TipoAlarma, EstadoAlarma, ValorActual, UmbralConfigurado, CalaID
+            # Todas están en 'datos'.
+
             # Enviar el nuevo payload como una lista de un solo elemento
-            sql_thread = threading.Thread(target=worker_enviar_sql, args=([payload_sql],))
+            sql_thread = threading.Thread(target=worker_enviar_sql, args=([datos],))
             sql_thread.daemon = True
             sql_thread.start()
     
@@ -1741,7 +1805,6 @@ def main():
     # Inicializar variables de datos
     reset_ui_data()
     init_csv()
-    init_alarm_csv() # Inicializar CSV de alarmas
     
     # Configurar título de ventana con idioma correcto
     pygame.display.set_caption(TEXTOS[IDIOMA]["titulo_ventana"])
@@ -2081,15 +2144,18 @@ def main():
                         )
                         
                         if nuevo_cala_id > 0 and current_cala_id == 0:
-                            log_cala(
+                            current_cala_id = nuevo_cala_id # Update global state FIRST
+
+                            # Registrar el inicio del evento de cala
+                            registrar_evento_cala(
                                 API_KEY_GOOGLE_CLOUD if API_KEY_GOOGLE_CLOUD else "ShipID",
                                 ts_timestamp_str if ts_timestamp_str != "N/A" else ts_now.strftime("%Y-%m-%d %H:%M:%S"),
                                 nuevo_cala_id,
                                 ts_lat_decimal,
                                 ts_lon_decimal
                             )
-
-                        current_cala_id = nuevo_cala_id
+                        else:
+                            current_cala_id = nuevo_cala_id
 
                 # Resetear la información de la alarma también en el bucle oculto
                 current_alarm_info.update({
@@ -2100,7 +2166,7 @@ def main():
                 # Aquí también se debería verificar y actualizar el estado de las alarmas,
                 # aunque no se reproduzcan sonidos. Esto asegura que si una alarma se activa
                 # mientras está en la bandeja, se registre correctamente.
-                # (Esta lógica se omite por brevedad, pero es idéntica a la del bucle principal)
+                procesar_logica_alarmas()
 
                 pygame.time.delay(100)
             continue
@@ -2584,17 +2650,18 @@ def main():
 
                 # Si se acaba de confirmar una nueva cala (el ID anterior era 0 y el nuevo no lo es)
                 if nuevo_cala_id > 0 and current_cala_id == 0:
-                    # Registrar la cala solo una vez en el archivo de log de calas
-                    log_cala(
+                    current_cala_id = nuevo_cala_id # Update global state FIRST
+
+                    # Registrar el inicio del evento de cala
+                    registrar_evento_cala(
                         API_KEY_GOOGLE_CLOUD if API_KEY_GOOGLE_CLOUD else "ShipID",
                         ts_timestamp_str if ts_timestamp_str != "N/A" else ts_now.strftime("%Y-%m-%d %H:%M:%S"),
                         nuevo_cala_id,
                         ts_lat_decimal,
                         ts_lon_decimal
                     )
-
-                # Actualizar el ID de la cala actual para que se incluya en cada registro de datos
-                current_cala_id = nuevo_cala_id
+                else:
+                    current_cala_id = nuevo_cala_id
         
         # Resetear la información de la alarma al inicio de cada ciclo
         current_alarm_info.update({
@@ -2602,137 +2669,8 @@ def main():
             "ValorActual": None, "UmbralConfigurado": None
         })
 
-        # Detección de condiciones de alarma
-        # Usar los valores de ts_pitch_float y ts_roll_float que ya son floats
-        if valores_alarma: # Asegurarse que valores_alarma está cargado
-            try:
-                # Roll
-                umbral_min_roll_float = float(valores_alarma["min_roll_neg"])
-                umbral_max_roll_float = float(valores_alarma["max_roll_pos"])
-                
-                # Alarma Roll Babor (ahora activada por valores POSITIVOS)
-                condicion_babor_fisica = ts_roll_float > umbral_max_roll_float if att_roll_str != "N/A" else False
-                if condicion_babor_fisica:
-                    if tiempo_inicio_condicion_roll_babor == 0.0:
-                        tiempo_inicio_condicion_roll_babor = time.time()
-                    
-                    # Solo activar si ha pasado el tiempo requerido
-                    if time.time() - tiempo_inicio_condicion_roll_babor >= DURACION_ACTIVACION_ALARMA:
-                        if not alarma_roll_babor_activa:
-                            msg_alarma = f"ALARMA ROLL BABOR ACTIVADA. Valor: {ts_roll_float:.1f}°, Umbral: {umbral_max_roll_float:.1f}°"
-                            guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_BABOR", "ACTIVANDO", ts_roll_float, umbral_max_roll_float)
-                            agregar_a_consola(msg_alarma)
-                            alarma_roll_babor_activa = True
-                            current_alarm_info.update({
-                                "TipoAlarma": "ROLL_BABOR", "EstadoAlarma": "ACTIVADA",
-                                "ValorActual": ts_roll_float, "UmbralConfigurado": umbral_max_roll_float
-                            })
-                else:
-                    tiempo_inicio_condicion_roll_babor = 0.0
-                    if alarma_roll_babor_activa:
-                        msg_alarma = f"ALARMA ROLL BABOR DESACTIVADA. Valor: {ts_roll_float:.1f}°"
-                        guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_BABOR", "DESACTIVANDO", ts_roll_float, umbral_max_roll_float)
-                        agregar_a_consola(msg_alarma)
-                        alarma_roll_babor_activa = False
-                        current_alarm_info.update({
-                            "TipoAlarma": "ROLL_BABOR", "EstadoAlarma": "DESACTIVADA",
-                            "ValorActual": ts_roll_float, "UmbralConfigurado": umbral_max_roll_float
-                        })
-
-                # Alarma Roll Estribor (ahora activada por valores NEGATIVOS)
-                condicion_estribor_fisica = ts_roll_float < umbral_min_roll_float if att_roll_str != "N/A" else False
-                if condicion_estribor_fisica:
-                    if tiempo_inicio_condicion_roll_estribor == 0.0:
-                        tiempo_inicio_condicion_roll_estribor = time.time()
-                    
-                    if time.time() - tiempo_inicio_condicion_roll_estribor >= DURACION_ACTIVACION_ALARMA:
-                        if not alarma_roll_estribor_activa:
-                            msg_alarma = f"ALARMA ROLL ESTRIBOR ACTIVADA. Valor: {ts_roll_float:.1f}°, Umbral: {umbral_min_roll_float:.1f}°"
-                            guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_ESTRIBOR", "ACTIVANDO", ts_roll_float, umbral_min_roll_float)
-                            agregar_a_consola(msg_alarma)
-                            alarma_roll_estribor_activa = True
-                            current_alarm_info.update({
-                                "TipoAlarma": "ROLL_ESTRIBOR", "EstadoAlarma": "ACTIVADA",
-                                "ValorActual": ts_roll_float, "UmbralConfigurado": umbral_min_roll_float
-                            })
-                else:
-                    tiempo_inicio_condicion_roll_estribor = 0.0
-                    if alarma_roll_estribor_activa:
-                        msg_alarma = f"ALARMA ROLL ESTRIBOR DESACTIVADA. Valor: {ts_roll_float:.1f}°"
-                        guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ROLL_ESTRIBOR", "DESACTIVANDO", ts_roll_float, umbral_min_roll_float)
-                        agregar_a_consola(msg_alarma)
-                        alarma_roll_estribor_activa = False
-                        current_alarm_info.update({
-                            "TipoAlarma": "ROLL_ESTRIBOR", "EstadoAlarma": "DESACTIVADA",
-                            "ValorActual": ts_roll_float, "UmbralConfigurado": umbral_min_roll_float
-                        })
-
-                # Pitch
-                umbral_min_pitch_float = float(valores_alarma["min_pitch_neg"])
-                umbral_max_pitch_float = float(valores_alarma["max_pitch_pos"])
-
-                # Alarma Pitch Encabuzado
-                condicion_encabuzado_fisica = ts_pitch_float < umbral_min_pitch_float if att_pitch_str != "N/A" else False
-                if condicion_encabuzado_fisica:
-                    if tiempo_inicio_condicion_pitch_encabuzado == 0.0:
-                        tiempo_inicio_condicion_pitch_encabuzado = time.time()
-                        
-                    if time.time() - tiempo_inicio_condicion_pitch_encabuzado >= DURACION_ACTIVACION_ALARMA:
-                        if not alarma_pitch_encabuzado_activa:
-                            msg_alarma = f"ALARMA PITCH ENCABUZADO ACTIVADA. Valor: {ts_pitch_float:.1f}°, Umbral: {umbral_min_pitch_float:.1f}°"
-                            guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_ENCABUZADO", "ACTIVANDO", ts_pitch_float, umbral_min_pitch_float)
-                            agregar_a_consola(msg_alarma)
-                            alarma_pitch_encabuzado_activa = True
-                            current_alarm_info.update({
-                                "TipoAlarma": "PITCH_ENCABUZADO", "EstadoAlarma": "ACTIVADA",
-                                "ValorActual": ts_pitch_float, "UmbralConfigurado": umbral_min_pitch_float
-                            })
-                else:
-                    tiempo_inicio_condicion_pitch_encabuzado = 0.0
-                    if alarma_pitch_encabuzado_activa:
-                        msg_alarma = f"ALARMA PITCH ENCABUZADO DESACTIVADA. Valor: {ts_pitch_float:.1f}°"
-                        guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_ENCABUZADO", "DESACTIVANDO", ts_pitch_float, umbral_min_pitch_float)
-                        agregar_a_consola(msg_alarma)
-                        alarma_pitch_encabuzado_activa = False
-                        current_alarm_info.update({
-                            "TipoAlarma": "PITCH_ENCABUZADO", "EstadoAlarma": "DESACTIVADA",
-                            "ValorActual": ts_pitch_float, "UmbralConfigurado": umbral_min_pitch_float
-                        })
-                
-                # Alarma Pitch Sentado
-                condicion_sentado_fisica = ts_pitch_float > umbral_max_pitch_float if att_pitch_str != "N/A" else False
-                if condicion_sentado_fisica:
-                    if tiempo_inicio_condicion_pitch_sentado == 0.0:
-                        tiempo_inicio_condicion_pitch_sentado = time.time()
-                    
-                    if time.time() - tiempo_inicio_condicion_pitch_sentado >= DURACION_ACTIVACION_ALARMA:
-                        if not alarma_pitch_sentado_activa:
-                            msg_alarma = f"ALARMA PITCH SENTADO ACTIVADA. Valor: {ts_pitch_float:.1f}°, Umbral: {umbral_max_pitch_float:.1f}°"
-                            guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_SENTADO", "ACTIVANDO", ts_pitch_float, umbral_max_pitch_float)
-                            agregar_a_consola(msg_alarma)
-                            alarma_pitch_sentado_activa = True
-                            current_alarm_info.update({
-                                "TipoAlarma": "PITCH_SENTADO", "EstadoAlarma": "ACTIVADA",
-                                "ValorActual": ts_pitch_float, "UmbralConfigurado": umbral_max_pitch_float
-                            })
-                else:
-                    tiempo_inicio_condicion_pitch_sentado = 0.0
-                    if alarma_pitch_sentado_activa:
-                        msg_alarma = f"ALARMA PITCH SENTADO DESACTIVADA. Valor: {ts_pitch_float:.1f}°"
-                        guardar_alarma_csv(ts_timestamp_str if ts_timestamp_str != "N/A" else datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "PITCH_SENTADO", "DESACTIVANDO", ts_pitch_float, umbral_max_pitch_float)
-                        agregar_a_consola(msg_alarma)
-                        alarma_pitch_sentado_activa = False
-                        current_alarm_info.update({
-                            "TipoAlarma": "PITCH_SENTADO", "EstadoAlarma": "DESACTIVADA",
-                            "ValorActual": ts_pitch_float, "UmbralConfigurado": umbral_max_pitch_float
-                        })
-                
-            except (ValueError, KeyError) as e: # Si hay error en conversión o claves
-                # print(f"Error al procesar umbrales de alarma: {e}")
-                alarma_roll_babor_activa = False
-                alarma_roll_estribor_activa = False
-                alarma_pitch_sentado_activa = False
-                alarma_pitch_encabuzado_activa = False
+        # Procesar lógica de alarmas
+        procesar_logica_alarmas()
         
         # Manejo de reproducción de alarmas
         alarmas_activas_para_sonar = []
